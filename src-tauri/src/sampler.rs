@@ -280,3 +280,57 @@ pub fn ensure_starter_drum_wav_files(samples_dir: &Path, sample_rate: u32) {
         }
     }
 }
+
+/// Time-stretch and/or pitch-shift an existing PCM stereo sample buffer.
+pub fn process_pcm_time_stretch_and_pitch(
+    pcm: &SharedStereoPcm,
+    sample_rate: u32,
+    stretch_ratio: f64,
+    pitch_semitones: f64,
+) -> SharedStereoPcm {
+    let flat: Vec<f32> = pcm.iter().flat_map(|f| [f[0], f[1]]).collect();
+    let processed = crate::timestretch::pitch_shift_and_time_stretch(
+        &flat,
+        2,
+        sample_rate,
+        stretch_ratio,
+        pitch_semitones,
+    );
+
+    let mut out_frames = Vec::with_capacity(processed.len() / 2);
+    for frame in processed.chunks_exact(2) {
+        out_frames.push([frame[0], frame[1]]);
+    }
+    Arc::from(out_frames.into_boxed_slice())
+}
+
+/// Time-stretch an existing WAV file on disk and save the result as a new WAV in `samples_dir`.
+pub fn time_stretch_wav_file(
+    source_path: &Path,
+    samples_dir: &Path,
+    stretch_ratio: f64,
+    pitch_semitones: f64,
+    target_sample_rate: u32,
+) -> Result<(String, usize, f64), String> {
+    let (pcm, sr) = load_wav_file_resampled(source_path, target_sample_rate)?;
+    let stretched = process_pcm_time_stretch_and_pitch(&pcm, sr, stretch_ratio, pitch_semitones);
+
+    let _ = fs::create_dir_all(samples_dir);
+    let stem = source_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("sample");
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let new_filename = format!("{stem}_stretched_{ts}.wav");
+    let dest_path = samples_dir.join(&new_filename);
+
+    let flat: Vec<f32> = stretched.iter().flat_map(|f| [f[0], f[1]]).collect();
+    write_stereo_wav_file(&dest_path, &flat, sr)?;
+
+    let frame_count = stretched.len();
+    let duration_sec = (frame_count as f64) / (sr as f64);
+    Ok((dest_path.to_string_lossy().to_string(), frame_count, duration_sec))
+}

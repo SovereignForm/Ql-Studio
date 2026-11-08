@@ -18,6 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/Audio%20Core-Rust%20(cpal%20%2B%20rtrb)-orange?style=flat-square" alt="Rust Audio" />
   <img src="https://img.shields.io/badge/Plugin%20Host-VST3%20%2B%20CLAP-red?style=flat-square" alt="VST3 CLAP" />
+  <img src="https://img.shields.io/badge/Time--Stretch-WSOLA%20%2B%204--pt%20Hermite-orange?style=flat-square" alt="WSOLA Time-Stretch" />
   <img src="https://img.shields.io/badge/Hardware-USB%20MIDI%20(midir)-yellow?style=flat-square" alt="Hardware MIDI" />
   <img src="https://img.shields.io/badge/WAV%20Sampler-hound%20%2B%20Hermite%204--pt-green?style=flat-square" alt="Hound WAV" />
   <img src="https://img.shields.io/badge/GUI-Tauri%20v2%20%2B%20React%2019-blue?style=flat-square" alt="Tauri v2" />
@@ -28,14 +29,23 @@
 
 ## ⚡ Key Highlights & Capabilities
 
-### 🔌 VST3 & CLAP Third-Party Plugin Hosting
-* **Cross-Format Plugin Host (`vst3-host` & `clack-host`):** Scan standard system paths (`/usr/lib/vst3`, `~/.vst3`, `/Library/Audio/Plug-Ins/VST3`, `C:\Program Files\Common Files\VST3`) and host external third-party VST3 / CLAP synthesizers and effects.
-* **Studio Built-in FX Suite:**
-  * **Vintage Tape Saturator:** Analogue harmonic saturation with warm drive, tape compression, and high-frequency roll-off.
-  * **Mastering Precision Limiter:** Brickwall true-peak limiter with fast attack, program-dependent release, and zero-distortion ceiling.
-  * **303 Acid Bassline Synth:** Resonant analogue low-pass filter with envelope modulation.
-  * **Stereo Field Imager:** Mid/side stereo widening with phase correlation monitoring.
+### 🔌 VST3 & CLAP Third-Party Plugin Hosting & Dedicated Popout Native Windows
+* **Cross-Format Plugin Host (`vst3-host` & `clack-host`):** Scan standard system paths (`/usr/lib/vst3`, `~/.vst3`, `/Library/Audio/Plug-Ins/VST3`, `C:\Program Files\Common Files\VST3`) and host external third-party VST3 / CLAP synthesizers and effects (Serum, FabFilter, Vital, Kontakt, etc.).
+* **Dedicated Popout Native Windows (`tauri::WebviewWindow`):** Pop out any loaded plugin into its own dedicated desktop window with native title bar, arbitrary resizing, parameter sync, and floating focus.
+* **Studio Hardware-Modeled Skeuomorphic GUI Panels:**
+  * **Vintage Tape Saturator:** Brushed aluminum and real wood cheeks, dual backlit analog illuminated VU needle meters with needle physics, tape speed/bias, flutter, and warm tube drive.
+  * **Mastering Precision Limiter:** Dark slate chassis, high-contrast LED gain reduction bar ladder (0 to -24 dB), true-peak ISP limiter, threshold, and lookahead.
+  * **303 Acid Bassline Synth:** Roland TB-303 silver faceplate, 18Hz to 10kHz low-pass cutoff, self-oscillating resonance, envelope mod, accent, and an interactive 16-key silver keyboard.
+  * **Stereo Field Imager:** Real-time Lissajous vector oscilloscope / goniometer phase correlation display, 0% mono to 200% super-wide stereo field expander, and bass mono crossover.
 * **Zero-Allocation Audio Thread Slots:** 10 insert slots per mixer channel processed lock-free in real time.
+
+---
+
+### 🎚️ WSOLA Time-Stretching & Hermite Cubic Pitch-Shifting Motor
+* **Waveform Similarity Overlap-Add (WSOLA):** Artifact-free, phase-aligned time-stretching ($0.25\times$ to $4.0\times$) that preserves original pitch and formants without comb-filtering or phase cancellation.
+* **Independent Pitch-Shifter:** Shift pitch up or down by $\pm 24$ semitones ($\pm 2$ full octaves) with zero duration alteration using 4-point Hermite cubic resampling combined with WSOLA phase matching.
+* **Timeline Stretch Tool (`S`):** Grab the right edge of any audio clip on the Arranger to stretch its duration to match the project tempo in real time.
+* **Clip Properties Inspector:** Double-click any audio clip to inspect and tweak time-stretch multipliers and semitone transposition with instant waveform recalculation.
 
 ---
 

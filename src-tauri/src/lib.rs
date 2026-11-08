@@ -7,6 +7,7 @@ pub mod plugins;
 pub mod sampler;
 pub mod scheduler;
 pub mod schemas;
+pub mod timestretch;
 
 use commands::QlEngineController;
 
@@ -47,6 +48,9 @@ pub fn run() {
             commands::connect_midi_device,
             commands::disconnect_midi_device,
             commands::get_midi_status,
+            commands::time_stretch_audio_clip,
+            commands::stretch_channel_sample,
+            commands::open_plugin_gui_window,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ql Studio Tauri application");
@@ -476,5 +480,39 @@ mod tests {
         // Cleanup
         let _ = std::fs::remove_file(&summary.file_path);
         let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    #[test]
+    fn test_wsola_time_stretch_and_pitch_shift() {
+        use super::timestretch::{pitch_shift_and_time_stretch, time_stretch_multichannel};
+
+        // Create 0.2 second 440 Hz test sine wave (stereo, 48000 Hz)
+        let sample_rate = 48000;
+        let num_frames = (sample_rate as f32 * 0.2) as usize; // 9600 frames
+        let mut original = Vec::with_capacity(num_frames * 2);
+        for i in 0..num_frames {
+            let s = (2.0 * std::f32::consts::PI * 440.0 * (i as f32 / sample_rate as f32)).sin() * 0.5;
+            original.push(s);
+            original.push(s);
+        }
+
+        // 1. Test 1.5x time stretch (should yield ~1.5x frames, pitch invariant)
+        let stretched = time_stretch_multichannel(&original, 2, 1.5);
+        let expected_frames = (num_frames as f64 * 1.5) as usize;
+        let actual_frames = stretched.len() / 2;
+        let frame_diff = (actual_frames as isize - expected_frames as isize).abs();
+        assert!(
+            frame_diff < 50,
+            "Stretched frames ({actual_frames}) should match expected ({expected_frames})"
+        );
+
+        // 2. Test pitch shift +7 semitones (duration should remain ~1.0x with stretch_ratio=1.0)
+        let pitch_shifted = pitch_shift_and_time_stretch(&original, 2, sample_rate, 1.0, 7.0);
+        let ps_frames = pitch_shifted.len() / 2;
+        let ps_diff = (ps_frames as isize - num_frames as isize).abs();
+        assert!(
+            ps_diff < 50,
+            "Pitch shifted frames ({ps_frames}) should match original ({num_frames})"
+        );
     }
 }

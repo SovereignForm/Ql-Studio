@@ -38,6 +38,9 @@ import {
   PluginManagerModal,
 } from "./components/PluginManagerModal.tsx";
 import {
+  DedicatedPluginWindow,
+} from "./components/DedicatedPluginWindow.tsx";
+import {
   Toolbar,
   type PlaybackMode,
   type ProjectTemplateId,
@@ -326,6 +329,20 @@ interface HistorySnapshot {
 
 export const App: React.FC = () => {
   const engineClient = useMemo(() => new QlNativeEngineClient(), []);
+  const pluginWindowId = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    return new URLSearchParams(window.location.search).get("pluginWindow");
+  }, []);
+
+  if (pluginWindowId) {
+    return (
+      <DedicatedPluginWindow
+        instanceId={pluginWindowId}
+        engineClient={engineClient}
+      />
+    );
+  }
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wavInputRef = useRef<HTMLInputElement | null>(null);
   const wavTargetChannelRef = useRef<string>("ch_0");
@@ -659,6 +676,45 @@ export const App: React.FC = () => {
     setLoadedPlugins((prev) => prev.filter((p) => p.instanceId !== instanceId));
     setStatusMessage(`Unloaded plugin instance`);
   }, [engineClient]);
+
+  const handleTimeStretchClip = useCallback(
+    async (
+      clipId: string,
+      filePath: string,
+      stretchRatio: number,
+      pitchSemitones: number,
+    ) => {
+      try {
+        const res = await engineClient.timeStretchAudioClip(
+          clipId,
+          filePath,
+          stretchRatio,
+          pitchSemitones,
+          audioSettings.sampleRate,
+        );
+        setStatusMessage(
+          `WSOLA Stretched Audio Clip (${res.stretchRatio.toFixed(2)}x, ${
+            res.pitchSemitones > 0 ? "+" : ""
+          }${res.pitchSemitones} st) — ${res.durationSeconds.toFixed(2)}s`,
+        );
+      } catch (err) {
+        console.warn("Time stretch audio clip error:", err);
+      }
+    },
+    [audioSettings.sampleRate, engineClient],
+  );
+
+  const handleOpenPluginGui = useCallback(
+    async (instanceId: string) => {
+      try {
+        await engineClient.openPluginGuiWindow(instanceId);
+        setStatusMessage(`Opened plugin GUI window for instance ${instanceId}`);
+      } catch (err) {
+        console.warn("Failed to open plugin GUI window:", err);
+      }
+    },
+    [engineClient],
+  );
 
   const handleModeChange = useCallback(async (nextMode: PlaybackMode) => {
     setMode(nextMode);
@@ -1877,6 +1933,7 @@ export const App: React.FC = () => {
                   Math.floor(tick / (ppq / 4)) % (activePattern.stepCount || 16),
                 );
               }}
+              onTimeStretchClip={handleTimeStretchClip}
             />
           </FloatingWindow>
         )}
@@ -2297,6 +2354,7 @@ export const App: React.FC = () => {
           onLoadPlugin={handleLoadPlugin}
           onSetParameter={handleSetPluginParameter}
           onUnloadPlugin={handleUnloadPlugin}
+          onOpenPluginGui={handleOpenPluginGui}
         />
       </main>
 

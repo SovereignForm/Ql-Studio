@@ -20,6 +20,7 @@ import {
   Plus,
   Layers,
   CheckCircle2,
+  ExternalLink,
 } from "lucide-react";
 import type {
   PluginDescriptor,
@@ -45,6 +46,7 @@ export interface PluginManagerModalProps {
     value: number,
   ) => Promise<void>;
   readonly onUnloadPlugin: (instanceId: string) => Promise<void>;
+  readonly onOpenPluginGui?: (instanceId: string) => Promise<void>;
 }
 
 export const PluginManagerModal: React.FC<PluginManagerModalProps> = React.memo((props) => {
@@ -57,6 +59,7 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = React.memo(
     onLoadPlugin,
     onSetParameter,
     onUnloadPlugin,
+    onOpenPluginGui,
   } = props;
 
   const [activeTab, setActiveTab] = useState<"catalog" | "active">("catalog");
@@ -352,6 +355,16 @@ export const PluginManagerModal: React.FC<PluginManagerModalProps> = React.memo(
                       </div>
 
                       <div className="flex items-center gap-2">
+                        {onOpenPluginGui && (
+                          <button
+                            type="button"
+                            onClick={() => void onOpenPluginGui(inst.instanceId)}
+                            className="px-2 py-1 rounded bg-blue-900/60 hover:bg-blue-800 text-blue-200 text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                            title="Open Plugin Dedicated Original GUI Window"
+                          >
+                            <ExternalLink size={11} /> Open GUI Window
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() => void onUnloadPlugin(inst.instanceId)}

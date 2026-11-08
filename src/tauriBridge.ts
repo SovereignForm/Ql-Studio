@@ -25,6 +25,7 @@ import type {
   QlPattern,
   QlPlaylistState,
   RecordedAudioSummary,
+  TimeStretchResult,
   WaveformShape,
 } from "./schemas.ts";
 
@@ -792,5 +793,65 @@ export class QlNativeEngineClient {
       };
     }
     return invoke<MidiStatusSnapshot>("get_midi_status");
+  }
+
+  // --- Time-Stretching & Pitch-Shifting (WSOLA + 4-Point Hermite) ---
+
+  public async timeStretchAudioClip(
+    clipId: string,
+    filePath: string,
+    stretchRatio: number,
+    pitchShiftSemitones: number,
+    sampleRate = 48000,
+  ): Promise<TimeStretchResult> {
+    if (!this.isNativeRuntime) {
+      return {
+        clipId,
+        originalPath: filePath,
+        stretchedPath: filePath,
+        frameCount: 48000 * 2,
+        durationSeconds: 2.0 * stretchRatio,
+        stretchRatio,
+        pitchSemitones: pitchShiftSemitones,
+      };
+    }
+    return invoke<TimeStretchResult>("time_stretch_audio_clip", {
+      clipId,
+      filePath,
+      stretchRatio,
+      pitchShiftSemitones,
+      sampleRate,
+    });
+  }
+
+  public async stretchChannelSample(
+    slot: number,
+    stretchRatio: number,
+    pitchShiftSemitones: number,
+  ): Promise<void> {
+    if (!this.isNativeRuntime) {
+      return;
+    }
+    await invoke("stretch_channel_sample", {
+      slot,
+      stretchRatio,
+      pitchShiftSemitones,
+    });
+  }
+
+  // --- External VST3 / CLAP Native Dedicated Window ---
+
+  public async openPluginGuiWindow(instanceId: string): Promise<void> {
+    if (!this.isNativeRuntime) {
+      if (typeof window !== "undefined") {
+        window.open(
+          `?pluginWindow=${encodeURIComponent(instanceId)}`,
+          `plugin-${instanceId}`,
+          "width=760,height=540,resizable=yes",
+        );
+      }
+      return;
+    }
+    await invoke("open_plugin_gui_window", { instanceId });
   }
 }

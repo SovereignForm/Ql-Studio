@@ -242,6 +242,9 @@ export interface QlPlaylistClip {
   readonly name: string;
   readonly colorHex: `#${string}`;
   readonly muted?: boolean;
+  readonly stretchRatio?: number;
+  readonly pitchSemitones?: number;
+  readonly filePath?: string;
 }
 
 export interface QlAutomationPoint {
@@ -337,4 +340,14 @@ export interface MidiStatusSnapshot {
   readonly activeProfile: MidiControllerProfile;
   readonly lastActivityTimestampMs: number;
   readonly lastNotePlayed: number | null;
+}
+
+export interface TimeStretchResult {
+  readonly clipId: string;
+  readonly originalPath: string;
+  readonly stretchedPath: string;
+  readonly frameCount: number;
+  readonly durationSeconds: number;
+  readonly stretchRatio: number;
+  readonly pitchSemitones: number;
 }

@@ -221,3 +221,14 @@ console.log("[6] Clean-Room FLP Roundtrip:", {
   derivedBpm: parsedFlp.derivedBpm,
   eventCount: parsedFlp.events.length,
 });
+
+// 7. Time-Stretch & Plugin Native GUI Bridge Verification
+import { QlNativeEngineClient } from "./tauriBridge.ts";
+const client = new QlNativeEngineClient();
+const stretchResult = await client.timeStretchAudioClip("clip_vocal_1", "/samples/vocal.wav", 1.5, 7.0, 48000);
+console.log("[7] WSOLA Time-Stretch & Pitch Bridge Check:", {
+  clipId: stretchResult.clipId,
+  stretchRatio: stretchResult.stretchRatio,
+  pitchSemitones: stretchResult.pitchSemitones,
+  durationSeconds: stretchResult.durationSeconds,
+});

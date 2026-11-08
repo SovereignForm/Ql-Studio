@@ -26,6 +26,11 @@ import {
   AudioWaveform,
   Activity,
   Repeat,
+  MoveHorizontal,
+  Sliders,
+  Check,
+  X,
+  Settings2,
 } from "lucide-react";
 import type {
   QlAutomationClip,
@@ -37,7 +42,7 @@ import type {
   QlPlaylistTrack,
 } from "../schemas.ts";
 
-export type PlaylistTool = "select" | "pencil" | "slice" | "delete";
+export type PlaylistTool = "select" | "pencil" | "slice" | "delete" | "stretch";
 export type SnapResolution = "bar" | "beat" | "half" | "step" | "none";
 
 export interface PlaylistArrangerProps {
@@ -53,6 +58,12 @@ export interface PlaylistArrangerProps {
   readonly onSelectPattern: (patternId: string) => void;
   readonly onSeekTick: (tick: number) => void;
   readonly onLoadWavSample?: (channelId: string, path: string) => void;
+  readonly onTimeStretchClip?: (
+    clipId: string,
+    filePath: string,
+    stretchRatio: number,
+    pitchSemitones: number,
+  ) => Promise<void>;
 }
 
 const DEFAULT_TRACK_COUNT = 24;
@@ -71,12 +82,17 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
     onUpdatePlaylist,
     onSelectPattern,
     onSeekTick,
+    onTimeStretchClip,
   } = props;
 
   const [activeTool, setActiveTool] = useState<PlaylistTool>("pencil");
   const [snap, setSnap] = useState<SnapResolution>("step");
   const [pxPerTick, setPxPerTick] = useState<number>(0.18);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [editingAudioClip, setEditingAudioClip] = useState<QlPlaylistClip | null>(null);
+  const [modalStretchRatio, setModalStretchRatio] = useState<number>(1.0);
+  const [modalPitchSemitones, setModalPitchSemitones] = useState<number>(0);
+  const [applyingStretch, setApplyingStretch] = useState<boolean>(false);
   const [stampedSource, setStampedSource] = useState<{
     kind: "pattern" | "audio" | "automation";
     id: string;
@@ -195,7 +211,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
     window.addEventListener("pointerup", onPointerUp);
   };
 
-  // Resize right handle of clip
+  // Resize right handle of clip (or Time-Stretch when Stretch Tool is active)
   const handleResizeRight = (
     clip: QlPlaylistClip,
     e: React.MouseEvent<HTMLDivElement>,
@@ -203,17 +219,26 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
     e.stopPropagation();
     const startX = e.clientX;
     const initialLengthTicks = clip.lengthTicks;
+    const isStretchMode = activeTool === "stretch" && clip.kind === "audio";
+    let latestLengthTicks = initialLengthTicks;
 
     const onPointerMove = (ev: PointerEvent) => {
       const deltaX = ev.clientX - startX;
       const deltaTicks = Math.round(deltaX / pxPerTick);
       const minLength = ppq / 4;
       const newLengthTicks = Math.max(minLength, snapTick(initialLengthTicks + deltaTicks));
+      latestLengthTicks = newLengthTicks;
+
+      const newRatio = isStretchMode
+        ? Math.max(0.25, Math.min(4.0, newLengthTicks / (initialLengthTicks || 1)))
+        : (clip.stretchRatio ?? 1.0);
 
       onUpdatePlaylist((prev) => ({
         ...prev,
         clips: prev.clips.map((c) =>
-          c.id === clip.id ? { ...c, lengthTicks: newLengthTicks } : c,
+          c.id === clip.id
+            ? { ...c, lengthTicks: newLengthTicks, stretchRatio: newRatio }
+            : c,
         ),
       }));
     };
@@ -221,6 +246,16 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
     const onPointerUp = () => {
       window.removeEventListener("pointermove", onPointerMove);
       window.removeEventListener("pointerup", onPointerUp);
+
+      if (isStretchMode && onTimeStretchClip) {
+        const ratio = Math.max(0.25, Math.min(4.0, latestLengthTicks / (initialLengthTicks || 1)));
+        void onTimeStretchClip(
+          clip.id,
+          clip.filePath ?? "",
+          ratio,
+          clip.pitchSemitones ?? 0,
+        );
+      }
     };
 
     window.addEventListener("pointermove", onPointerMove);
@@ -424,6 +459,18 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
               }`}
             >
               <Scissors size={13} />
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTool("stretch")}
+              title="Time Stretch Mode (S) — Drag right edge of audio clips to stretch with WSOLA"
+              className={`p-1 rounded cursor-pointer ${
+                activeTool === "stretch"
+                  ? "bg-[#00e676] text-black font-bold shadow-xs"
+                  : "text-fl-dim hover:text-fl-text"
+              }`}
+            >
+              <MoveHorizontal size={13} />
             </button>
             <button
               type="button"
@@ -681,6 +728,10 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                   onDoubleClick={() => {
                     if (clip.kind === "pattern") {
                       onSelectPattern(clip.referenceId);
+                    } else if (clip.kind === "audio") {
+                      setEditingAudioClip(clip);
+                      setModalStretchRatio(clip.stretchRatio ?? 1.0);
+                      setModalPitchSemitones(clip.pitchSemitones ?? 0);
                     }
                   }}
                   onContextMenu={(e) => {
@@ -708,6 +759,16 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                       {clip.kind === "audio" && <AudioWaveform size={9} />}
                       {clip.kind === "automation" && <Activity size={9} />}
                       {clip.name}
+                      {clip.kind === "audio" && clip.stretchRatio && clip.stretchRatio !== 1.0 && (
+                        <span className="bg-black/60 text-[#00e676] px-1 rounded-2xs text-[7px] font-mono">
+                          {clip.stretchRatio.toFixed(2)}x
+                        </span>
+                      )}
+                      {clip.kind === "audio" && clip.pitchSemitones && clip.pitchSemitones !== 0 && (
+                        <span className="bg-black/60 text-fl-amber px-1 rounded-2xs text-[7px] font-mono">
+                          {clip.pitchSemitones > 0 ? `+${clip.pitchSemitones}` : clip.pitchSemitones}st
+                        </span>
+                      )}
                     </span>
                     <span className="text-[8px] opacity-75 font-mono">
                       {Math.round(clip.lengthTicks / ppq)} beats
@@ -762,11 +823,19 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                     )}
                   </div>
 
-                  {/* Right Edge Resize Handle */}
+                  {/* Right Edge Resize Handle (or Time-Stretch Handle) */}
                   <div
                     onPointerDown={(e) => handleResizeRight(clip, e)}
-                    title="Drag to Resize Duration"
-                    className="absolute right-0 top-0 bottom-0 w-2 hover:bg-white/40 cursor-ew-resize z-20"
+                    title={
+                      activeTool === "stretch" && clip.kind === "audio"
+                        ? "Drag to WSOLA Time-Stretch (Preserves Pitch)"
+                        : "Drag to Resize Duration"
+                    }
+                    className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-20 transition-colors ${
+                      activeTool === "stretch" && clip.kind === "audio"
+                        ? "bg-[#00e676]/70 hover:bg-[#00e676]"
+                        : "hover:bg-white/40"
+                    }`}
                   />
                 </div>
               );
@@ -786,11 +855,178 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
         <div>
           Arrangement: {playlist.clips.length} Clips · {tracks.length} Tracks · PPQ: {ppq}
         </div>
-        <div>
-          Playhead Tick: <span className="font-mono text-fl-amber">{songTick}</span> · Mode:{" "}
-          <span className="font-bold text-[#00e676]">SONG TIMELINE</span>
+        <div className="flex items-center gap-3">
+          {activeTool === "stretch" && (
+            <span className="text-[#00e676] font-mono animate-pulse">
+              [STRETCH MODE ACTIVE — WSOLA PHASE-ALIGNED 4-PT HERMITE]
+            </span>
+          )}
+          <div>
+            Playhead Tick: <span className="font-mono text-fl-amber">{songTick}</span> · Mode:{" "}
+            <span className="font-bold text-[#00e676]">SONG TIMELINE</span>
+          </div>
         </div>
       </div>
+
+      {/* WSOLA Time-Stretch & Pitch-Shift Audio Clip Modal */}
+      {editingAudioClip && (
+        <div className="fixed inset-0 bg-black/75 z-50 flex items-center justify-center p-4 backdrop-blur-2xs">
+          <div className="bg-[#1b1e25] border border-fl-amber/60 rounded-md w-full max-w-md shadow-2xl p-4 flex flex-col gap-3">
+            <div className="flex items-center justify-between border-b border-black/60 pb-2">
+              <div className="flex items-center gap-2">
+                <AudioWaveform size={16} className="text-[#00e676]" />
+                <span className="font-bold text-sm text-fl-text">
+                  Time-Stretch & Pitch Motoru (WSOLA)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingAudioClip(null)}
+                className="text-fl-dim hover:text-white p-1 rounded hover:bg-white/10 cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            </div>
+
+            <div className="text-[11px] text-fl-dim">
+              Clip: <span className="text-fl-amber font-mono">{editingAudioClip.name}</span>
+            </div>
+
+            {/* Time Stretch Controls */}
+            <div className="flex flex-col gap-1.5 bg-[#15171c] p-3 rounded border border-black/40">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-fl-text">Time-Stretch (Tempo/Süre):</span>
+                <span className="font-mono text-[#00e676] font-bold">
+                  {modalStretchRatio.toFixed(2)}x (
+                  {Math.round((editingAudioClip.lengthTicks * modalStretchRatio) / ppq)} beats)
+                </span>
+              </div>
+              <input
+                type="range"
+                min="0.25"
+                max="4.0"
+                step="0.05"
+                value={modalStretchRatio}
+                onChange={(e) => setModalStretchRatio(parseFloat(e.target.value))}
+                className="w-full accent-[#00e676] cursor-pointer"
+              />
+              <div className="flex items-center justify-between text-[9px] text-fl-dim">
+                <span>0.25x (4x Hızlı)</span>
+                <div className="flex gap-1">
+                  {[0.5, 0.75, 1.0, 1.5, 2.0].map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setModalStretchRatio(r)}
+                      className={`px-1.5 py-0.5 rounded text-[8px] font-mono cursor-pointer ${
+                        modalStretchRatio === r ? "bg-[#00e676] text-black font-bold" : "bg-fl-deep hover:bg-white/10 text-fl-dim"
+                      }`}
+                    >
+                      {r}x
+                    </button>
+                  ))}
+                </div>
+                <span>4.0x (4x Yavaş)</span>
+              </div>
+            </div>
+
+            {/* Pitch Shift Controls */}
+            <div className="flex flex-col gap-1.5 bg-[#15171c] p-3 rounded border border-black/40">
+              <div className="flex items-center justify-between text-[11px]">
+                <span className="font-semibold text-fl-text">Pitch-Shift (Perde/Nota):</span>
+                <span className="font-mono text-fl-amber font-bold">
+                  {modalPitchSemitones > 0 ? `+${modalPitchSemitones}` : modalPitchSemitones} Yarım Ton (st)
+                </span>
+              </div>
+              <input
+                type="range"
+                min="-24"
+                max="24"
+                step="1"
+                value={modalPitchSemitones}
+                onChange={(e) => setModalPitchSemitones(parseInt(e.target.value, 10))}
+                className="w-full accent-fl-amber cursor-pointer"
+              />
+              <div className="flex items-center justify-between text-[9px] text-fl-dim">
+                <span>-24 (2 Oktav Pes)</span>
+                <div className="flex gap-1">
+                  {[-12, -7, 0, 7, 12].map((st) => (
+                    <button
+                      key={st}
+                      type="button"
+                      onClick={() => setModalPitchSemitones(st)}
+                      className={`px-1.5 py-0.5 rounded text-[8px] font-mono cursor-pointer ${
+                        modalPitchSemitones === st ? "bg-fl-amber text-black font-bold" : "bg-fl-deep hover:bg-white/10 text-fl-dim"
+                      }`}
+                    >
+                      {st > 0 ? `+${st}` : st}
+                    </button>
+                  ))}
+                </div>
+                <span>+24 (2 Oktav Tiz)</span>
+              </div>
+            </div>
+
+            <div className="text-[10px] font-mono text-fl-dim/80 bg-black/40 p-2 rounded border border-white/5">
+              Algorithm: <b>WSOLA + 4-Point Hermite Cubic Resampler</b>
+              <br />
+              Pitch invariant stretching & duration invariant pitch shifting. Zero chipmunk / comb-filtering artifacts.
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-black/60">
+              <button
+                type="button"
+                onClick={() => setEditingAudioClip(null)}
+                className="px-3 py-1.5 rounded bg-fl-deep hover:bg-white/10 text-[11px] text-fl-text cursor-pointer"
+              >
+                İptal
+              </button>
+              <button
+                type="button"
+                disabled={applyingStretch}
+                onClick={async () => {
+                  setApplyingStretch(true);
+                  try {
+                    const newLengthTicks = Math.max(
+                      ppq / 4,
+                      Math.round(editingAudioClip.lengthTicks * modalStretchRatio),
+                    );
+                    onUpdatePlaylist((prev) => ({
+                      ...prev,
+                      clips: prev.clips.map((c) =>
+                        c.id === editingAudioClip.id
+                          ? {
+                              ...c,
+                              lengthTicks: newLengthTicks,
+                              stretchRatio: modalStretchRatio,
+                              pitchSemitones: modalPitchSemitones,
+                            }
+                          : c,
+                      ),
+                    }));
+
+                    if (onTimeStretchClip) {
+                      await onTimeStretchClip(
+                        editingAudioClip.id,
+                        editingAudioClip.filePath ?? "",
+                        modalStretchRatio,
+                        modalPitchSemitones,
+                      );
+                    }
+                    setEditingAudioClip(null);
+                  } finally {
+                    setApplyingStretch(false);
+                  }
+                }}
+                className="px-3 py-1.5 rounded bg-[#00e676] hover:bg-[#00c853] text-black font-bold text-[11px] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              >
+                <Check size={13} />
+                {applyingStretch ? "İşleniyor..." : "Uygula (WSOLA Stretch)"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });

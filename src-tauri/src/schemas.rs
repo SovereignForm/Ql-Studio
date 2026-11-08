@@ -389,3 +389,15 @@ pub struct AudioSettingsSnapshot {
     pub available_buffer_sizes: Vec<u32>,
     pub stream_active: bool,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimeStretchResult {
+    pub clip_id: String,
+    pub original_path: String,
+    pub stretched_path: String,
+    pub frame_count: usize,
+    pub duration_seconds: f64,
+    pub stretch_ratio: f64,
+    pub pitch_semitones: f64,
+}

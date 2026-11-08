@@ -18,8 +18,8 @@ use crate::plugins::{PluginHostManager, SharedPluginHost};
 use crate::schemas::{
     AudioSettingsSnapshot, EngineStatusSnapshot, PlayMode, PluginDescriptor,
     PluginInstanceSummary, PpqResolution, QlChannel, QlMixerSend, QlMixerState, QlPattern,
-    QlPlaylistState, RealTimeCommand, ScheduledAudioEventPod, TimeSignature, MAX_MIXER_INSERTS,
-    MAX_MIXER_SENDS,
+    QlPlaylistState, RealTimeCommand, ScheduledAudioEventPod, TimeSignature, TimeStretchResult,
+    MAX_MIXER_INSERTS, MAX_MIXER_SENDS,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -933,4 +933,121 @@ pub fn get_midi_status(
         .lock()
         .map_err(|e| format!("Failed to lock midi manager: {e}"))?;
     Ok(mgr.get_status())
+}
+
+#[tauri::command]
+pub fn time_stretch_audio_clip(
+    clip_id: String,
+    file_path: String,
+    stretch_ratio: f64,
+    pitch_shift_semitones: f64,
+    controller: State<'_, QlEngineController>,
+) -> Result<TimeStretchResult, String> {
+    let sample_rate = {
+        let guard = controller.shared.lock().map_err(|e| e.to_string())?;
+        guard.scheduler.metrics.sample_rate
+    };
+
+    let src = Path::new(&file_path);
+    if !src.exists() {
+        return Err(format!("Audio clip source file '{}' does not exist", file_path));
+    }
+
+    let samples_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("samples");
+
+    let (stretched_path, frame_count, duration_seconds) = crate::sampler::time_stretch_wav_file(
+        src,
+        &samples_dir,
+        stretch_ratio,
+        pitch_shift_semitones,
+        sample_rate,
+    )?;
+
+    Ok(TimeStretchResult {
+        clip_id,
+        original_path: file_path,
+        stretched_path,
+        frame_count,
+        duration_seconds,
+        stretch_ratio,
+        pitch_semitones: pitch_shift_semitones,
+    })
+}
+
+#[tauri::command]
+pub fn stretch_channel_sample(
+    slot: u8,
+    stretch_ratio: f64,
+    pitch_shift_semitones: f64,
+    controller: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let (existing_pcm, sample_rate) = {
+        let guard = controller.shared.lock().map_err(|e| e.to_string())?;
+        let idx = slot as usize;
+        if idx >= MAX_SAMPLE_SLOTS {
+            return Err(format!("Sample slot {} out of range", slot));
+        }
+        let pcm = guard.loaded_samples[idx]
+            .clone()
+            .ok_or_else(|| format!("No sample loaded in slot {}", slot))?;
+        (pcm, guard.scheduler.metrics.sample_rate)
+    };
+
+    let processed = crate::sampler::process_pcm_time_stretch_and_pitch(
+        &existing_pcm,
+        sample_rate,
+        stretch_ratio,
+        pitch_shift_semitones,
+    );
+
+    let mut guard = controller.shared.lock().map_err(|e| e.to_string())?;
+    guard.loaded_samples[slot as usize] = Some(processed.clone());
+    let _ = guard.sample_producer.push((slot, processed));
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn open_plugin_gui_window(
+    instance_id: String,
+    app_handle: tauri::AppHandle,
+    controller: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    use tauri::Manager;
+
+    let host = controller.plugin_host.lock().map_err(|e| e.to_string())?;
+    let inst = host
+        .instances
+        .get(&instance_id)
+        .ok_or_else(|| format!("Plugin instance '{}' not found", instance_id))?;
+    let plugin_title = format!("{} — Ql Studio Plugin Editor", inst.descriptor.name);
+
+    let clean_label = format!("plugin-win-{}", instance_id.replace(':', "-").replace('_', "-"));
+
+    if let Some(existing) = app_handle.get_webview_window(&clean_label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let url_str = format!("index.html?pluginWindow={}", urlencoding_simple(&instance_id));
+    let _ = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        &clean_label,
+        tauri::WebviewUrl::App(url_str.into()),
+    )
+    .title(plugin_title)
+    .inner_size(760.0, 540.0)
+    .min_inner_size(480.0, 360.0)
+    .resizable(true)
+    .build();
+
+    Ok(())
+}
+
+fn urlencoding_simple(s: &str) -> String {
+    s.replace(':', "%3A").replace('_', "%5F")
 }
