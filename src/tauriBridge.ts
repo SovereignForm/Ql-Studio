@@ -582,6 +582,7 @@ export class QlNativeEngineClient {
       return this.fallbackAudioSettings;
     }
     return invoke<AudioSettingsSnapshot>("set_audio_buffer_size", {
+      bufferSize: bufferSizeFrames,
       bufferSizeFrames,
     });
   }

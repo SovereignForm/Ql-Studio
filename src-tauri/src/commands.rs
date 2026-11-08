@@ -562,10 +562,12 @@ pub fn get_audio_settings(
 
 #[tauri::command]
 pub fn set_audio_buffer_size(
-    buffer_size: u32,
+    buffer_size: Option<u32>,
+    buffer_size_frames: Option<u32>,
     state: State<'_, QlEngineController>,
 ) -> Result<AudioSettingsSnapshot, String> {
-    let clamped = match buffer_size {
+    let raw = buffer_size.or(buffer_size_frames).unwrap_or(1024);
+    let clamped = match raw {
         0..=384 => 256,
         385..=768 => 512,
         769..=1536 => 1024,

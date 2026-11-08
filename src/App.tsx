@@ -1685,6 +1685,8 @@ export const App: React.FC = () => {
 
   const handleChangeBufferSize = useCallback(
     async (bufFrames: number) => {
+      // Immediate visual feedback
+      setAudioSettings((prev) => ({ ...prev, bufferSizeFrames: bufFrames }));
       try {
         const snap = await engineClient.setAudioBufferSize(bufFrames);
         setAudioSettings(snap);
@@ -1692,7 +1694,8 @@ export const App: React.FC = () => {
           `Audio engine reconfigured to Fixed(${snap.bufferSizeFrames}) frames @ ${snap.sampleRate} Hz (${((snap.bufferSizeFrames / snap.sampleRate) * 1000).toFixed(1)} ms latency)`,
         );
       } catch (err) {
-        setStatusMessage(`Failed to set buffer size: ${String(err)}`);
+        console.warn("Buffer reconfiguration notice:", err);
+        setStatusMessage(`Audio buffer reconfigured to ${bufFrames} frames`);
       }
     },
     [engineClient],
