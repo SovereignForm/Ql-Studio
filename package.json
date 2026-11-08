@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Ql Studio — High-Performance DAW Engine (React + Tailwind + Canvas + Tauri v2 Rust Core)",
-  "license": "MIT OR Apache-2.0",
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

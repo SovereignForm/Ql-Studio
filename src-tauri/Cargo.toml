@@ -2,7 +2,7 @@
 name = "ql-studio-core"
 version = "0.1.0"
 description = "Ql Studio — High-Performance Zero-Allocation DAW Engine (Tauri v2 + Rust Core)"
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 authors = ["SovereignForm"]
 edition = "2021"
 

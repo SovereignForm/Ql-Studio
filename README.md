@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://github.com/SovereignForm/Ql-Studio/stargazers"><img src="https://img.shields.io/github/stars/SovereignForm/Ql-Studio?style=for-the-badge&logo=star&color=ff8500" alt="GitHub Stars" /></a>
   <a href="https://github.com/SovereignForm/Ql-Studio/releases"><img src="https://img.shields.io/github/v/release/SovereignForm/Ql-Studio?style=for-the-badge&color=00e676" alt="Latest Release" /></a>
-  <a href="#-license"><img src="https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-38bdf8?style=for-the-badge" alt="License MIT or Apache-2.0" /></a>
+  <a href="#-license"><img src="https://img.shields.io/badge/License-GPLv3%20%2B%20VST%20Exception-38bdf8?style=for-the-badge" alt="License GPLv3 with VST Exception" /></a>
 </p>
 
 <p align="center">
@@ -163,9 +163,7 @@ Pre-built binaries are generated automatically on release:
 
 ## 📄 License
 
-This project is dual-licensed under either:
+This project is licensed under the **GNU General Public License, Version 3 (GPL-3.0-or-later)** with an explicit **Audio Plugin Exception** ([LICENSE](LICENSE)).
 
-- **MIT License** ([LICENSE-MIT](LICENSE-MIT))
-- **Apache License, Version 2.0** ([LICENSE-APACHE](LICENSE-APACHE))
-
-at your option. This dual-licensing model provides maximum freedom for open-source users alongside strong corporate and patent protection.
+### Audio Plugin Exception Clause
+As a special exception to the GNU GPLv3, the copyright holders of Ql Studio grant explicit permission to link, combine, and host third-party audio plugins, SDK interfaces, and software libraries (including, but not limited to, **VST, VST3, CLAP, LV2, and AudioUnit** formats) regardless of the license terms of those plugins, ensuring full freedom to use both open-source and commercial proprietary instruments and effects within Ql Studio, while guaranteeing that Ql Studio's own core engine remains 100% free and open-source forever.
