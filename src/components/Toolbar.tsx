@@ -272,7 +272,7 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
     <header className="shrink-0 bg-fl-panel border-b border-black/80">
       {/* Menu strip */}
       <div className="h-6 flex items-center gap-0.5 px-2 border-b border-black/60 bg-[#1f2328] relative">
-        <img src="/logo.svg" alt="QL Studio Logo" className="w-4 h-4 mr-1.5 drop-shadow-[0_0_6px_#ff8500]" />
+        <img src="./logo.svg" alt="QL Studio Logo" className="w-4 h-4 mr-1.5 drop-shadow-[0_0_6px_#ff8500]" />
         <span className="text-[11px] font-extrabold text-fl-orange mr-3 tracking-widest">QL STUDIO</span>
         {MENUS.map((m) => (
           <div key={m} className="relative">

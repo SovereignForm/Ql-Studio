@@ -1,6 +1,6 @@
 {
   "name": "ql-studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Ql Studio — High-Performance DAW Engine (React + Tailwind + Canvas + Tauri v2 Rust Core)",

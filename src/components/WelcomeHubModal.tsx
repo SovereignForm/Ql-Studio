@@ -117,7 +117,7 @@ export const WelcomeHubModal: React.FC<WelcomeHubModalProps> = ({
         <div className="h-14 bg-[#1f232b] border-b border-black/70 px-5 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3">
             <img
-              src="/logo.svg"
+              src="./logo.svg"
               alt="Logo"
               className="w-7 h-7 drop-shadow-[0_0_8px_rgba(255,133,0,0.6)]"
             />

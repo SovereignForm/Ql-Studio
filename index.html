@@ -4,6 +4,32 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Ql Studio — Modern DAW Engine</title>
+    <script>
+      window.addEventListener('error', function(e) {
+        var el = document.createElement('pre');
+        el.style.color = '#ff3366';
+        el.style.background = '#0a0a0a';
+        el.style.padding = '20px';
+        el.style.position = 'fixed';
+        el.style.top = '0';
+        el.style.left = '0';
+        el.style.zIndex = '999999';
+        el.textContent = 'WINDOW ERROR: ' + e.message + ' at ' + e.filename + ':' + e.lineno + '\n' + (e.error ? e.error.stack : '');
+        document.body.appendChild(el);
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        var el = document.createElement('pre');
+        el.style.color = '#ffcc00';
+        el.style.background = '#0a0a0a';
+        el.style.padding = '20px';
+        el.style.position = 'fixed';
+        el.style.top = '100px';
+        el.style.left = '0';
+        el.style.zIndex = '999999';
+        el.textContent = 'PROMISE REJECTION: ' + (e.reason ? (e.reason.stack || e.reason) : e);
+        document.body.appendChild(el);
+      });
+    </script>
   </head>
   <body class="bg-[#16191e] text-zinc-100 antialiased selection:bg-amber-500 selection:text-black">
     <div id="root"></div>

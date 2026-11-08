@@ -88,7 +88,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
         <div className="relative mb-6">
           <div className="absolute -inset-4 bg-fl-orange/20 rounded-full blur-2xl animate-pulse" />
           <img
-            src="/logo.svg"
+            src="./logo.svg"
             alt="QL Studio Logo"
             className="w-24 h-24 drop-shadow-[0_0_24px_rgba(255,133,0,0.65)] relative transform hover:scale-105 transition-transform"
           />
