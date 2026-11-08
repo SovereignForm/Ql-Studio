@@ -1,0 +1,168 @@
+name: "Release Ql Studio (Linux, macOS, Windows)"
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: 'ubuntu-22.04'
+            args: ''
+            target: 'x86_64-unknown-linux-gnu'
+          - platform: 'windows-latest'
+            args: ''
+            target: 'x86_64-pc-windows-msvc'
+          - platform: 'macos-latest'
+            args: '--target universal-apple-darwin'
+            target: 'aarch64-apple-darwin, x86_64-apple-darwin'
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux system dependencies (Ubuntu)
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libpipewire-0.3-dev libfuse2 squashfs-tools zsync appstream desktop-file-utils
+          # Allow appimage tools to run in non-root unprivileged container environments
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
+
+          # Pre-populate Tauri AppImage cache to prevent GitHub 504 Gateway Time-out
+          mkdir -p ~/.cache/tauri
+          
+          get_elf() {
+            local asset_id="$1"
+            local out="$2"
+            local min_size="$3"
+            for i in 1 2 3; do
+              rm -f "$out"
+              curl -f -sSL --connect-timeout 15 -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/$asset_id" -o "$out" 2>/dev/null || true
+              if [ -f "$out" ]; then
+                local size=$(wc -c < "$out")
+                local magic=$(head -c 4 "$out")
+                if [ "$size" -gt "$min_size" ] && [ "$magic" = $'\x7fELF' ]; then
+                  chmod +x "$out"
+                  echo "Successfully verified $out ($size bytes ELF)"
+                  return 0
+                fi
+              fi
+              echo "Attempt $i failed or invalid format. Retrying..."
+              sleep 2
+            done
+            rm -f "$out"
+            return 1
+          }
+
+          get_elf "274691722" ~/.cache/tauri/AppRun-x86_64 10000 || true
+          
+          if get_elf "576945544" ~/.cache/tauri/linuxdeploy-07333c6-x86_64.AppImage 10000000; then
+            cp ~/.cache/tauri/linuxdeploy-07333c6-x86_64.AppImage ~/.cache/tauri/linuxdeploy-x86_64.AppImage
+            curl -f -sSL --connect-timeout 15 -H "Accept: application/octet-stream" "https://api.github.com/repos/linuxdeploy/linuxdeploy-plugin-appimage/releases/assets/602435573" -o ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage 2>/dev/null || true
+            if [ -f ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage ]; then
+              chmod +x ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage
+              cp ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage ~/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage
+            fi
+            echo "LINUX_BUNDLES=--bundles deb,appimage" >> $GITHUB_ENV
+          else
+            echo "Notice: linuxdeploy could not be downloaded due to GitHub upstream 504. Falling back to native .deb bundle."
+            echo "LINUX_BUNDLES=--bundles deb" >> $GITHUB_ENV
+          fi
+
+          ls -la ~/.cache/tauri/
+
+      - name: Pre-populate Tauri cache (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $tauriDir = Join-Path $env:LOCALAPPDATA "tauri"
+          New-Item -ItemType Directory -Force -Path $tauriDir
+
+          Write-Host "Downloading NSIS 3.13 via GitHub API stream..."
+          $nsisZip = Join-Path $env:TEMP "nsis-3.13.zip"
+          curl.exe -sSL --retry 3 -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/623832696" -o $nsisZip
+          Expand-Archive -Path $nsisZip -DestinationPath $tauriDir -Force
+          $extractedNsis = Join-Path $tauriDir "nsis-3.13"
+          $targetNsis = Join-Path $tauriDir "NSIS"
+          if (Test-Path $targetNsis) { Remove-Item -Recurse -Force $targetNsis }
+          Rename-Item -Path $extractedNsis -NewName "NSIS"
+
+          Write-Host "Downloading NSIS Tauri Utils..."
+          $pluginDir = Join-Path $targetNsis "Plugins\x86-unicode\additional"
+          New-Item -ItemType Directory -Force -Path $pluginDir
+          curl.exe -sSL --retry 3 -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/nsis-tauri-utils/releases/assets/345882097" -o (Join-Path $pluginDir "nsis_tauri_utils.dll")
+
+          Write-Host "Downloading WiX 3.14 via GitHub API stream..."
+          $wixDir = Join-Path $tauriDir "WixTools314"
+          New-Item -ItemType Directory -Force -Path $wixDir
+          $wixZip = Join-Path $env:TEMP "wix314.zip"
+          curl.exe -sSL --retry 3 -H "Accept: application/octet-stream" "https://api.github.com/repos/wixtoolset/wix3/releases/assets/158158052" -o $wixZip
+          Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
+
+          Write-Host "Downloading WebView2 Bootstrapper..."
+          curl.exe -sSL "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -o (Join-Path $tauriDir "MicrosoftEdgeWebview2Setup.exe")
+
+          # Also mirror to $HOME\.cache\tauri for cross-path compatibility
+          $homeCache = Join-Path $HOME ".cache\tauri"
+          New-Item -ItemType Directory -Force -Path $homeCache
+          Copy-Item -Recurse -Force "$targetNsis" "$homeCache\NSIS"
+          Copy-Item -Recurse -Force "$wixDir" "$homeCache\WixTools314"
+
+          Get-ChildItem -Path $tauriDir
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri Desktop Application
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: v__VERSION__
+          releaseName: 'Ql Studio v__VERSION__'
+          releaseBody: |
+            ## Ql Studio — Professional Pattern-Based DAW Engine
+
+            ### Release Assets:
+            - **Linux**: AppImage / .deb
+            - **Windows**: .msi / .exe (x64 setup)
+            - **macOS**: .dmg / .app (Apple Silicon & Universal)
+
+            ### Features:
+            - **Zero-Allocation Audio Thread**: Built with Rust `cpal` + wait-free `rtrb` ring buffers.
+            - **PCM WAV Sampler**: Resampling via 4-point Hermite cubic interpolation and `hound`.
+            - **64-Insert Kahn DAG Mixer**: Parametric EQ (RBJ biquad) and acyclic audio routing.
+            - **Studio Interface**: 16-step channel rack, graph editor, piano roll, and playlist arrangement.
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }} ${{ env.LINUX_BUNDLES }}

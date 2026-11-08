@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+/*
+ * Ql Studio design tokens — dark slate workstation palette with FL-style accents.
+ * Values follow the Phase 5 UI brief.
+ */
+@theme {
+  --color-fl-base: #1b1e23;
+  --color-fl-panel: #22262c;
+  --color-fl-raised: #2c323a;
+  --color-fl-deep: #14161a;
+  --color-fl-line: #0e1013;
+  --color-fl-text: #c9ced6;
+  --color-fl-dim: #7d8590;
+
+  --color-fl-orange: #ff8500;
+  --color-fl-led: #00e676;
+  --color-fl-mute: #25d366;
+  --color-fl-amber: #ffb300;
+  --color-fl-red: #ff3d3d;
+
+  --color-fl-step-grey: #434952;
+  --color-fl-step-wine: #543d46;
+
+  --font-lcd: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: var(--color-fl-base);
+  color: var(--color-fl-text);
+  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+  font-size: 12px;
+  user-select: none;
+}
+
+/* 3D bevel: 1px top highlight + bottom shade */
+.fl-bevel {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.45),
+    0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+/* Inset well (LCDs, meters, inputs) */
+.fl-inset {
+  box-shadow:
+    inset 0 1px 2px rgba(0, 0, 0, 0.6),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Matte brushed panel texture */
+.fl-matte {
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(0, 0, 0, 0.08)),
+    repeating-linear-gradient(90deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 3px);
+}
+
+.fl-lcd {
+  font-family: var(--font-lcd);
+  background: #0b0d0f;
+  color: var(--color-fl-amber);
+  text-shadow: 0 0 6px rgba(255, 179, 0, 0.45);
+}
+
+/* Convex step pad */
+.fl-step {
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(0, 0, 0, 0.22));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.35),
+    0 1px 1px rgba(0, 0, 0, 0.6);
+}
+
+.fl-step-on {
+  background-image: linear-gradient(180deg, #ffd9a8, #ff9d2e 55%, #e06d00);
+  box-shadow:
+    0 0 8px rgba(255, 133, 0, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.55),
+    inset 0 -2px 0 rgba(120, 50, 0, 0.5);
+}
+
+.fl-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.fl-scroll::-webkit-scrollbar-track {
+  background: #16181c;
+}
+.fl-scroll::-webkit-scrollbar-thumb {
+  background: #3a414b;
+  border-radius: 4px;
+}

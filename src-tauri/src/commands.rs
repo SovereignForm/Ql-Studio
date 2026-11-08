@@ -1,0 +1,638 @@
+//! QL STUDIO — Tauri v2 IPC Commands, `hound` WAV Sampler & Audio Stream Controller
+//!
+//! Exposes `#[tauri::command]` endpoints (`play`, `pause`, `stop`, `set_bpm`, `set_swing`,
+//! `update_pattern`, `update_mixer_graph`, `get_engine_status`, `import_flp_file`,
+//! `load_sample_file`, `export_wav_file`, `get_audio_settings`, `set_audio_buffer_size`)
+//! and configures `cpal` with `BufferSize::Fixed(1024)` for crackle-free PipeWire/ALSA playback.
+
+use crate::dsp::{
+    compute_rbj_biquad_coeffs, verify_acyclic_routing_graph, DagVerificationReport,
+};
+use crate::importers::flp::{parse_flp_file, QlProjectPayload};
+use crate::sampler::{
+    ensure_starter_drum_wav_files, load_wav_file_resampled, write_stereo_wav_file,
+    LoadedSampleSummary, SharedStereoPcm, MAX_SAMPLE_SLOTS,
+};
+use crate::scheduler::{NativeLookaheadScheduler, RealTimeAudioEngine};
+use crate::schemas::{
+    AudioSettingsSnapshot, EngineStatusSnapshot, PpqResolution, QlChannel, QlMixerSend,
+    QlMixerState, QlPattern, RealTimeCommand, ScheduledAudioEventPod, TimeSignature,
+    MAX_MIXER_INSERTS, MAX_MIXER_SENDS,
+};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rtrb::{Consumer, Producer, RingBuffer};
+use std::collections::HashMap;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+use tauri::State;
+
+pub const DEFAULT_HARDWARE_BUFFER_FRAMES: u32 = 1024;
+
+pub struct SharedLookaheadState {
+    pub scheduler: NativeLookaheadScheduler,
+    pub pattern: QlPattern,
+    pub channels: Vec<QlChannel>,
+    pub event_producer: Producer<ScheduledAudioEventPod>,
+    pub command_producer: Producer<RealTimeCommand>,
+    pub sample_producer: Producer<(u8, SharedStereoPcm)>,
+    pub sample_gc_consumer: Consumer<SharedStereoPcm>,
+    pub loaded_samples: [Option<SharedStereoPcm>; MAX_SAMPLE_SLOTS],
+    pub device_name: String,
+    pub buffer_size_frames: u32,
+    pub audio_stream_active: bool,
+}
+
+pub struct QlEngineController {
+    pub shared: Arc<Mutex<SharedLookaheadState>>,
+    pub is_playing_atomic: Arc<AtomicBool>,
+    pub current_frame_estimate: Arc<AtomicU64>,
+    _cpal_stream: Mutex<Option<Box<dyn Send + Sync>>>,
+}
+
+struct StreamHolder(#[allow(dead_code)] cpal::Stream);
+// SAFETY: Stream handle is retained on the controller to keep the audio callback alive
+unsafe impl Send for StreamHolder {}
+unsafe impl Sync for StreamHolder {}
+
+impl QlEngineController {
+    pub fn new() -> Self {
+        let (event_producer, event_consumer) = RingBuffer::<ScheduledAudioEventPod>::new(8192);
+        let (command_producer, command_consumer) = RingBuffer::<RealTimeCommand>::new(1024);
+        let (sample_producer, sample_consumer) = RingBuffer::<(u8, SharedStereoPcm)>::new(64);
+        let (sample_gc_producer, sample_gc_consumer) = RingBuffer::<SharedStereoPcm>::new(64);
+
+        let is_playing_atomic = Arc::new(AtomicBool::new(false));
+        let current_frame_estimate = Arc::new(AtomicU64::new(0));
+
+        let (sample_rate, device_name, actual_buf_frames, stream_holder) =
+            Self::try_spawn_cpal_stream(
+                DEFAULT_HARDWARE_BUFFER_FRAMES,
+                event_consumer,
+                command_consumer,
+                sample_consumer,
+                sample_gc_producer,
+                current_frame_estimate.clone(),
+            );
+
+        // Materialize starter drum kit .wav files into ../samples
+        let samples_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("samples");
+        ensure_starter_drum_wav_files(&samples_dir, sample_rate);
+
+        let default_pattern = QlPattern {
+            id: "pat_1".to_string(),
+            index: 1,
+            name: "Pattern 1".to_string(),
+            color_hex: "#ff8500".to_string(),
+            time_signature: TimeSignature {
+                numerator: 4,
+                denominator: 4,
+            },
+            step_count: 16,
+            channel_data: HashMap::new(),
+        };
+
+        let starter_kit = crate::sampler::build_starter_drum_kit(sample_rate);
+        let mut loaded_samples: [Option<SharedStereoPcm>; MAX_SAMPLE_SLOTS] =
+            std::array::from_fn(|_| None);
+        loaded_samples[0] = Some(starter_kit[0].clone());
+        loaded_samples[1] = Some(starter_kit[1].clone());
+        loaded_samples[2] = Some(starter_kit[2].clone());
+        loaded_samples[3] = Some(starter_kit[3].clone());
+
+        let shared = Arc::new(Mutex::new(SharedLookaheadState {
+            scheduler: NativeLookaheadScheduler::new(
+                140.0,
+                PpqResolution::Ppq96,
+                sample_rate,
+                0.50,
+            ),
+            pattern: default_pattern,
+            channels: Vec::new(),
+            event_producer,
+            command_producer,
+            sample_producer,
+            sample_gc_consumer,
+            loaded_samples,
+            device_name,
+            buffer_size_frames: actual_buf_frames,
+            audio_stream_active: stream_holder.is_some(),
+        }));
+
+        // Dedicated 4ms high-cadence lookahead scheduler + non-RT sample garbage collector thread
+        let shared_bg = shared.clone();
+        let playing_bg = is_playing_atomic.clone();
+        let frame_bg = current_frame_estimate.clone();
+        thread::Builder::new()
+            .name("ql-studio-lookahead".to_string())
+            .spawn(move || loop {
+                thread::sleep(Duration::from_millis(4));
+                if let Ok(mut guard) = shared_bg.lock() {
+                    // Drain any retired sample buffers returned from the audio thread
+                    while guard.sample_gc_consumer.pop().is_ok() {}
+
+                    if !playing_bg.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    let SharedLookaheadState {
+                        scheduler,
+                        pattern,
+                        channels,
+                        event_producer,
+                        ..
+                    } = &mut *guard;
+                    let frame = frame_bg.load(Ordering::Relaxed);
+                    scheduler.advance_lookahead(frame, pattern, channels, event_producer);
+                }
+            })
+            .ok();
+
+        Self {
+            shared,
+            is_playing_atomic,
+            current_frame_estimate,
+            _cpal_stream: Mutex::new(
+                stream_holder.map(|s| Box::new(s) as Box<dyn Send + Sync>),
+            ),
+        }
+    }
+
+    fn try_spawn_cpal_stream(
+        requested_buffer_frames: u32,
+        event_consumer: Consumer<ScheduledAudioEventPod>,
+        command_consumer: Consumer<RealTimeCommand>,
+        sample_consumer: Consumer<(u8, SharedStereoPcm)>,
+        sample_gc_producer: Producer<SharedStereoPcm>,
+        frame_counter: Arc<AtomicU64>,
+    ) -> (u32, String, u32, Option<StreamHolder>) {
+        let host = cpal::default_host();
+        let Some(device) = host.default_output_device() else {
+            return (
+                48_000,
+                "Headless / No Output Device".to_string(),
+                requested_buffer_frames,
+                None,
+            );
+        };
+        let device_name = device
+            .name()
+            .unwrap_or_else(|_| "Default System Audio".to_string());
+        let Ok(supported_config) = device.default_output_config() else {
+            return (48_000, device_name, requested_buffer_frames, None);
+        };
+
+        let base_config: cpal::StreamConfig = supported_config.into();
+        let sample_rate = base_config.sample_rate.0;
+        let channels = base_config.channels as usize;
+        let clamped_buf = requested_buffer_frames.clamp(256, 4096);
+
+        // Configure explicit Fixed buffer size (512 or 1024 frames) to eliminate PipeWire/ALSA underrun crackle
+        let fixed_config = cpal::StreamConfig {
+            channels: base_config.channels,
+            sample_rate: base_config.sample_rate,
+            buffer_size: cpal::BufferSize::Fixed(clamped_buf),
+        };
+
+        let mut rt_engine = Box::new(
+            RealTimeAudioEngine::new(sample_rate, event_consumer, command_consumer)
+                .with_sample_channels(sample_consumer, sample_gc_producer),
+        );
+        let fc_for_cb = frame_counter.clone();
+
+        // Check whether the device supports explicit fixed buffer sizes via supported_output_configs
+        let supports_fixed = device
+            .supported_output_configs()
+            .map(| mut configs | {
+                configs.any(|r| {
+                    matches!(
+                        r.buffer_size(),
+                        cpal::SupportedBufferSize::Range { min, max }
+                            if *min <= clamped_buf && clamped_buf <= *max
+                    )
+                })
+            })
+            .unwrap_or(true);
+
+        let chosen_config = if supports_fixed {
+            fixed_config
+        } else {
+            base_config
+        };
+
+        let stream_res = device.build_output_stream(
+            &chosen_config,
+            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+                rt_engine.process_interleaved_f32(data, channels);
+                fc_for_cb.store(rt_engine.current_sample_frame, Ordering::Relaxed);
+            },
+            move |err| {
+                eprintln!("[QlStudio Audio Stream Warning]: {err}");
+            },
+            None,
+        );
+
+        match stream_res {
+            Ok(stream) => {
+                let _ = stream.play();
+                (
+                    sample_rate,
+                    device_name,
+                    clamped_buf,
+                    Some(StreamHolder(stream)),
+                )
+            }
+            Err(_) => (sample_rate, device_name, clamped_buf, None),
+        }
+    }
+}
+
+#[tauri::command]
+pub fn play(state: State<'_, QlEngineController>) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.is_playing = true;
+    let _ = guard.command_producer.push(RealTimeCommand::Play);
+    state.is_playing_atomic.store(true, Ordering::Release);
+
+    let frame = state.current_frame_estimate.load(Ordering::Relaxed);
+    let SharedLookaheadState {
+        scheduler,
+        pattern,
+        channels,
+        event_producer,
+        ..
+    } = &mut *guard;
+    scheduler.advance_lookahead(frame, pattern, channels, event_producer);
+
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn pause(state: State<'_, QlEngineController>) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.is_playing = false;
+    let _ = guard.command_producer.push(RealTimeCommand::Pause);
+    state.is_playing_atomic.store(false, Ordering::Release);
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn stop(state: State<'_, QlEngineController>) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.is_playing = false;
+    guard.scheduler.next_unscheduled_tick = 0;
+    let _ = guard.command_producer.push(RealTimeCommand::Stop);
+    state.is_playing_atomic.store(false, Ordering::Release);
+    state.current_frame_estimate.store(0, Ordering::Release);
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn set_bpm(
+    bpm: f64,
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    if !(10.0..=522.0).contains(&bpm) {
+        return Err(format!("BPM out of valid range (10.0..=522.0): {bpm}"));
+    }
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.set_bpm(bpm);
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn set_swing(
+    swing_ratio: f64,
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    if !(0.50..=0.75).contains(&swing_ratio) {
+        return Err(format!(
+            "Swing ratio out of valid range (0.50..=0.75): {swing_ratio}"
+        ));
+    }
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.set_swing(swing_ratio);
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn update_pattern(
+    pattern: QlPattern,
+    channels: Vec<QlChannel>,
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.pattern = pattern;
+    guard.channels = channels;
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn update_mixer_graph(
+    mixer: QlMixerState,
+    state: State<'_, QlEngineController>,
+) -> Result<DagVerificationReport, String> {
+    let report = verify_acyclic_routing_graph(&mixer);
+    if !report.is_acyclic {
+        return Err(format!(
+            "Feedback loop detected in Mixer routing graph at inserts: {:?}",
+            report.cycle_inserts
+        ));
+    }
+
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    let sample_rate = guard.scheduler.metrics.sample_rate as f64;
+
+    for ins in &mixer.inserts {
+        let eq_coeffs = compute_rbj_biquad_coeffs(&ins.eq_band, sample_rate);
+        let fader_gain_linear = if ins.fader_volume_db <= -96.0 {
+            0.0
+        } else {
+            10.0_f32.powf(ins.fader_volume_db / 20.0)
+        };
+        let _ = guard.command_producer.push(RealTimeCommand::SetInsertParams {
+            insert_index: ins.index,
+            pan: ins.pan,
+            stereo_separation: ins.stereo_separation,
+            fader_gain_linear,
+            muted: ins.muted,
+            eq_coeffs,
+            eq_enabled: ins.eq_band.enabled,
+        });
+    }
+
+    let mut topological_order = [0u8; MAX_MIXER_INSERTS];
+    let node_count = report.topological_order.len().min(MAX_MIXER_INSERTS);
+    topological_order[..node_count].copy_from_slice(&report.topological_order[..node_count]);
+
+    let mut sends = [QlMixerSend {
+        source_insert: 0,
+        target_insert: 0,
+        gain_linear: 0.0,
+        pre_fader: false,
+        sidechain_only: false,
+    }; MAX_MIXER_SENDS];
+    let send_count = mixer.sends.len().min(MAX_MIXER_SENDS);
+    sends[..send_count].copy_from_slice(&mixer.sends[..send_count]);
+
+    let _ = guard
+        .command_producer
+        .push(RealTimeCommand::UpdateRoutingSchedule {
+            topological_order,
+            node_count: node_count as u8,
+            sends,
+            send_count: send_count as u8,
+        });
+
+    Ok(report)
+}
+
+#[tauri::command]
+pub fn get_engine_status(
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    let guard = state.shared.lock().map_err(|e| e.to_string())?;
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn import_flp_file(
+    path: String,
+    state: State<'_, QlEngineController>,
+) -> Result<QlProjectPayload, String> {
+    let payload = parse_flp_file(Path::new(&path))?;
+
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.set_bpm(payload.bpm);
+    guard.scheduler.set_swing(payload.global_swing_ratio);
+    guard.channels = payload.channels.clone();
+    if let Some(first_pat) = payload.patterns.first() {
+        guard.pattern = first_pat.clone();
+    }
+
+    Ok(payload)
+}
+
+/// Loads a 16/24/32-bit `.wav` file via `hound`, resamples to the engine's hardware sample rate
+/// using 4-point Hermite cubic interpolation, and transfers the buffer lock-free to the voice engine.
+#[tauri::command]
+pub fn load_sample_file(
+    channel_id: u32,
+    path: String,
+    state: State<'_, QlEngineController>,
+) -> Result<LoadedSampleSummary, String> {
+    let slot = (channel_id as usize).min(MAX_SAMPLE_SLOTS - 1) as u8;
+    let wav_path = Path::new(&path);
+
+    let target_sr = {
+        let guard = state.shared.lock().map_err(|e| e.to_string())?;
+        guard.scheduler.metrics.sample_rate
+    };
+
+    let (pcm, _src_sr) = load_wav_file_resampled(wav_path, target_sr)?;
+    let frame_count = pcm.len();
+    let duration_ms = ((frame_count as f64) / (target_sr as f64)) * 1000.0;
+    let sample_name = wav_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("Sample {channel_id}"));
+
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.loaded_samples[slot as usize] = Some(pcm.clone());
+    let _ = guard.sample_producer.push((slot, pcm));
+
+    if let Some(ch) = guard
+        .channels
+        .iter_mut()
+        .find(|c| c.index as u32 == channel_id)
+    {
+        ch.name = sample_name.clone();
+        ch.sample_slot = Some(slot);
+        ch.waveform = crate::schemas::WaveformShape::SamplerPcm;
+    }
+
+    Ok(LoadedSampleSummary {
+        channel_id,
+        sample_name,
+        source_path: path,
+        frame_count,
+        sample_rate: target_sr,
+        duration_ms,
+    })
+}
+
+/// Offline renders `bars` bars of the current pattern and writes a 16-bit stereo `.wav` file via `hound`.
+#[tauri::command]
+pub fn export_wav_file(
+    path: String,
+    bars: u32,
+    state: State<'_, QlEngineController>,
+) -> Result<String, String> {
+    let (bpm, ppq, sample_rate, swing, pattern, channels, loaded_samples) = {
+        let guard = state.shared.lock().map_err(|e| e.to_string())?;
+        (
+            guard.scheduler.metrics.bpm,
+            guard.scheduler.metrics.ppq,
+            guard.scheduler.metrics.sample_rate,
+            guard.scheduler.global_swing_ratio,
+            guard.pattern.clone(),
+            guard.channels.clone(),
+            guard.loaded_samples.clone(),
+        )
+    };
+
+    let (mut ev_prod, ev_cons) = RingBuffer::<ScheduledAudioEventPod>::new(16384);
+    let (mut cmd_prod, cmd_cons) = RingBuffer::<RealTimeCommand>::new(64);
+    cmd_prod.push(RealTimeCommand::Play).ok();
+
+    let mut offline_sched = NativeLookaheadScheduler::new(bpm, ppq, sample_rate, swing);
+    offline_sched.is_playing = true;
+    offline_sched.lookahead_window_sec = 1.0;
+
+    let mut offline_engine = RealTimeAudioEngine::new(sample_rate, ev_cons, cmd_cons);
+    offline_engine.sample_bank = loaded_samples;
+
+    let seconds_per_bar = (60.0 / bpm) * 4.0;
+    let total_frames = ((seconds_per_bar * (bars.max(1) as f64)) * (sample_rate as f64)).round() as usize;
+    let mut rendered_interleaved = vec![0.0f32; total_frames * 2];
+
+    let chunk_frames = 512usize;
+    let mut frame_cursor = 0usize;
+    while frame_cursor < total_frames {
+        let count = (total_frames - frame_cursor).min(chunk_frames);
+        offline_sched.advance_lookahead(frame_cursor as u64, &pattern, &channels, &mut ev_prod);
+        let slice = &mut rendered_interleaved[frame_cursor * 2..(frame_cursor + count) * 2];
+        offline_engine.process_interleaved_f32(slice, 2);
+        frame_cursor += count;
+    }
+
+    write_stereo_wav_file(Path::new(&path), &rendered_interleaved, sample_rate)?;
+    Ok(path)
+}
+
+#[tauri::command]
+pub fn get_audio_settings(
+    state: State<'_, QlEngineController>,
+) -> Result<AudioSettingsSnapshot, String> {
+    let guard = state.shared.lock().map_err(|e| e.to_string())?;
+    Ok(AudioSettingsSnapshot {
+        device_name: guard.device_name.clone(),
+        sample_rate: guard.scheduler.metrics.sample_rate,
+        buffer_size_frames: guard.buffer_size_frames,
+        available_buffer_sizes: vec![256, 512, 1024, 2048],
+        stream_active: guard.audio_stream_active,
+    })
+}
+
+#[tauri::command]
+pub fn set_audio_buffer_size(
+    buffer_size: u32,
+    state: State<'_, QlEngineController>,
+) -> Result<AudioSettingsSnapshot, String> {
+    let clamped = match buffer_size {
+        0..=384 => 256,
+        385..=768 => 512,
+        769..=1536 => 1024,
+        _ => 2048,
+    };
+
+    let (event_producer, event_consumer) = RingBuffer::<ScheduledAudioEventPod>::new(8192);
+    let (command_producer, command_consumer) = RingBuffer::<RealTimeCommand>::new(1024);
+    let (sample_producer, sample_consumer) = RingBuffer::<(u8, SharedStereoPcm)>::new(64);
+    let (sample_gc_producer, sample_gc_consumer) = RingBuffer::<SharedStereoPcm>::new(64);
+
+    // Drop old stream before opening reconfigured hardware stream
+    if let Ok(mut stream_slot) = state._cpal_stream.lock() {
+        *stream_slot = None;
+    }
+
+    let (sample_rate, device_name, actual_buf, stream_holder) =
+        QlEngineController::try_spawn_cpal_stream(
+            clamped,
+            event_consumer,
+            command_consumer,
+            sample_consumer,
+            sample_gc_producer,
+            state.current_frame_estimate.clone(),
+        );
+
+    let has_stream = stream_holder.is_some();
+    if let Ok(mut stream_slot) = state._cpal_stream.lock() {
+        *stream_slot = stream_holder.map(|s| Box::new(s) as Box<dyn Send + Sync>);
+    }
+
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.event_producer = event_producer;
+    guard.command_producer = command_producer;
+    guard.sample_producer = sample_producer;
+    guard.sample_gc_consumer = sample_gc_consumer;
+    guard.device_name = device_name.clone();
+    guard.buffer_size_frames = actual_buf;
+    guard.audio_stream_active = has_stream;
+    guard.scheduler.metrics = crate::scheduler::compute_timing_metrics(
+        guard.scheduler.metrics.bpm,
+        guard.scheduler.metrics.ppq,
+        sample_rate,
+    );
+
+    // Re-push loaded custom samples into the new stream
+    {
+        let SharedLookaheadState {
+            loaded_samples,
+            sample_producer,
+            ..
+        } = &mut *guard;
+        for (slot, maybe_pcm) in loaded_samples.iter().enumerate() {
+            if let Some(ref pcm) = maybe_pcm {
+                let _ = sample_producer.push((slot as u8, pcm.clone()));
+            }
+        }
+    }
+    if guard.scheduler.is_playing {
+        let _ = guard.command_producer.push(RealTimeCommand::Play);
+    }
+
+    Ok(AudioSettingsSnapshot {
+        device_name,
+        sample_rate,
+        buffer_size_frames: actual_buf,
+        available_buffer_sizes: vec![256, 512, 1024, 2048],
+        stream_active: guard.audio_stream_active,
+    })
+}
+
+#[tauri::command]
+pub fn toggle_fullscreen(window: tauri::Window) -> Result<bool, String> {
+    let is_fullscreen = window.is_fullscreen().map_err(|e| e.to_string())?;
+    window.set_fullscreen(!is_fullscreen).map_err(|e| e.to_string())?;
+    Ok(!is_fullscreen)
+}
+
+#[tauri::command]
+pub fn toggle_maximize(window: tauri::Window) -> Result<bool, String> {
+    let is_max = window.is_maximized().map_err(|e| e.to_string())?;
+    if is_max {
+        window.unmaximize().map_err(|e| e.to_string())?;
+        Ok(false)
+    } else {
+        window.maximize().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+}
+
+fn snapshot_from_guard(guard: &SharedLookaheadState) -> EngineStatusSnapshot {
+    EngineStatusSnapshot {
+        is_playing: guard.scheduler.is_playing,
+        bpm: guard.scheduler.metrics.bpm,
+        ppq: guard.scheduler.metrics.ppq as u16,
+        swing_ratio: guard.scheduler.global_swing_ratio,
+        sample_rate: guard.scheduler.metrics.sample_rate,
+        buffer_size_frames: guard.buffer_size_frames,
+        next_unscheduled_tick: guard.scheduler.next_unscheduled_tick,
+        audio_stream_active: guard.audio_stream_active,
+    }
+}

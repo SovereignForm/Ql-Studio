@@ -1,0 +1,22 @@
+[package]
+name = "ql-studio-core"
+version = "0.1.0"
+description = "Ql Studio — High-Performance Zero-Allocation DAW Engine (Tauri v2 + Rust Core)"
+license = "MIT OR Apache-2.0"
+authors = ["SovereignForm"]
+edition = "2021"
+
+[lib]
+name = "ql_studio_core"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.0.0", features = [] }
+
+[dependencies]
+tauri = { version = "2.0.0", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+cpal = "0.15"
+rtrb = "0.3"
+hound = "3.5"

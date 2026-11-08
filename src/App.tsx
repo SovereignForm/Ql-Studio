@@ -1,0 +1,1886 @@
+import {
+  CheckCircle2,
+  Columns3,
+  Cpu,
+  FolderTree,
+  Info,
+  LayoutGrid,
+  Piano,
+  Settings,
+  SlidersHorizontal,
+  X,
+} from "lucide-react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  BrowserSidebar,
+  type BrowserItem,
+} from "./components/BrowserSidebar.tsx";
+import {
+  CHANNEL_COLORS,
+  ChannelRack,
+  ChannelRackHeader,
+  EMPTY_STEP,
+  type ChannelAction,
+  type ChannelPatch,
+} from "./components/ChannelRack.tsx";
+import {
+  MixerPanel,
+  type InsertPatch,
+} from "./components/MixerPanel.tsx";
+import {
+  Toolbar,
+  type PlaybackMode,
+  type ProjectTemplateId,
+  type SystemStats,
+  type UtilitySwitches,
+} from "./components/Toolbar.tsx";
+import { buildCleanRoomSampleFlp, parseFlpBinary } from "./flpParser.ts";
+import { createDefaultMixerState } from "./mixer.ts";
+import type {
+  InsertEffectConfig,
+  PpqResolution,
+  QlChannel,
+  QlChannelPatternData,
+  QlMixerState,
+  QlPattern,
+  QlPianoRollNote,
+  QlStep,
+} from "./schemas.ts";
+import {
+  fromNativeChannelPayload,
+  QlNativeEngineClient,
+  type AudioSettingsSnapshot,
+  type QlProjectPayload,
+} from "./tauriBridge.ts";
+import {
+  FloatingWindow,
+  type WindowState,
+} from "./ui/FloatingWindow.tsx";
+
+function createStep(active = false, velocity = 100): QlStep {
+  return {
+    ...EMPTY_STEP,
+    active,
+    velocity,
+  };
+}
+
+const INITIAL_CHANNELS: QlChannel[] = [
+  {
+    id: "ch_0",
+    index: 0,
+    name: "808 Sub Kick (.wav)",
+    colorHex: "#ff6b35",
+    generator: {
+      kind: "sampler_pcm",
+      assetId: "slot_0",
+      sampleRate: 48000,
+      channels: 2,
+      lengthFrames: 24000,
+      loopStartFrame: null,
+      loopEndFrame: null,
+      interpolation: "hermite_cubic",
+    },
+    pan: 0.0,
+    volumeDb: 0.0,
+    rootMidiNote: 60,
+    pitchSemitones: 0,
+    pitchCents: 0,
+    swingMultiplier: 1.0,
+    muted: false,
+    solo: false,
+    assignedMixerInsert: 1,
+    sampleSlot: 0,
+    samplePath: "samples/kick_808.wav",
+  },
+  {
+    id: "ch_1",
+    index: 1,
+    name: "Studio Clap (.wav)",
+    colorHex: "#00b4d8",
+    generator: {
+      kind: "sampler_pcm",
+      assetId: "slot_1",
+      sampleRate: 48000,
+      channels: 2,
+      lengthFrames: 12000,
+      loopStartFrame: null,
+      loopEndFrame: null,
+      interpolation: "hermite_cubic",
+    },
+    pan: 0.0,
+    volumeDb: -1.0,
+    rootMidiNote: 60,
+    pitchSemitones: 0,
+    pitchCents: 0,
+    swingMultiplier: 1.0,
+    muted: false,
+    solo: false,
+    assignedMixerInsert: 2,
+    sampleSlot: 1,
+    samplePath: "samples/clap_studio.wav",
+  },
+  {
+    id: "ch_2",
+    index: 2,
+    name: "Closed Hat (.wav)",
+    colorHex: "#fee440",
+    generator: {
+      kind: "sampler_pcm",
+      assetId: "slot_2",
+      sampleRate: 48000,
+      channels: 2,
+      lengthFrames: 5000,
+      loopStartFrame: null,
+      loopEndFrame: null,
+      interpolation: "hermite_cubic",
+    },
+    pan: 0.12,
+    volumeDb: -2.5,
+    rootMidiNote: 60,
+    pitchSemitones: 0,
+    pitchCents: 0,
+    swingMultiplier: 1.0,
+    muted: false,
+    solo: false,
+    assignedMixerInsert: 3,
+    sampleSlot: 2,
+    samplePath: "samples/hihat_closed.wav",
+  },
+  {
+    id: "ch_3",
+    index: 3,
+    name: "808 Snare (.wav)",
+    colorHex: "#06d6a0",
+    generator: {
+      kind: "sampler_pcm",
+      assetId: "slot_3",
+      sampleRate: 48000,
+      channels: 2,
+      lengthFrames: 11000,
+      loopStartFrame: null,
+      loopEndFrame: null,
+      interpolation: "hermite_cubic",
+    },
+    pan: -0.08,
+    volumeDb: -1.5,
+    rootMidiNote: 60,
+    pitchSemitones: 0,
+    pitchCents: 0,
+    swingMultiplier: 1.0,
+    muted: false,
+    solo: false,
+    assignedMixerInsert: 4,
+    sampleSlot: 3,
+    samplePath: "samples/snare_808.wav",
+  },
+  {
+    id: "ch_4",
+    index: 4,
+    name: "Saw Reese Bass",
+    colorHex: "#9b5de5",
+    generator: {
+      kind: "oscillator_synth",
+      oscillators: [
+        {
+          waveform: "sawtooth",
+          coarseSemitones: 0,
+          fineCents: 0,
+          mixLevel: 1.0,
+          pulseWidth: 0.5,
+        },
+      ],
+    },
+    pan: 0.0,
+    volumeDb: -2.0,
+    rootMidiNote: 48,
+    pitchSemitones: 0,
+    pitchCents: 0,
+    swingMultiplier: 1.0,
+    muted: false,
+    solo: false,
+    assignedMixerInsert: 5,
+  },
+];
+
+function createDefaultPattern(
+  id: string,
+  index: number,
+  name: string,
+  channels: readonly QlChannel[],
+  presetKind: "trap_140" | "basic_808" | "empty" = "trap_140",
+): QlPattern {
+  const channelData: Record<string, QlChannelPatternData> = {};
+  const presetSteps: Record<number, number[]> =
+    presetKind === "empty"
+      ? {}
+      : presetKind === "basic_808"
+        ? {
+            0: [0, 8],
+            1: [4, 12],
+            2: [0, 2, 4, 6, 8, 10, 12, 14],
+            3: [12],
+            4: [],
+          }
+        : {
+            0: [0, 6, 10],
+            1: [4, 12],
+            2: [0, 2, 3, 4, 6, 8, 10, 12, 14, 15],
+            3: [4, 12],
+            4: [0, 3, 10],
+          };
+
+  channels.forEach((ch, idx) => {
+    const hits = presetSteps[idx] ?? [];
+    const steps = Array.from({ length: 16 }, (_, sIdx) =>
+      createStep(hits.includes(sIdx), sIdx % 4 === 0 ? 116 : 96),
+    );
+    channelData[ch.id] = {
+      channelId: ch.id,
+      steps,
+      notes: [],
+    };
+  });
+
+  return {
+    id,
+    index,
+    name,
+    colorHex: "#ff8500",
+    timeSignature: { numerator: 4, denominator: 4 },
+    stepCount: 16,
+    channelData,
+  };
+}
+
+function defaultWindowsLayout(): Record<string, WindowState> {
+  return {
+    browser: {
+      id: "browser",
+      rect: { x: 8, y: 8, w: 252, h: 740 },
+      z: 10,
+      open: true,
+      minimized: false,
+      maximized: false,
+    },
+    rack: {
+      id: "rack",
+      rect: { x: 268, y: 8, w: 1116, h: 382 },
+      z: 20,
+      open: true,
+      minimized: false,
+      maximized: false,
+    },
+    mixer: {
+      id: "mixer",
+      rect: { x: 268, y: 398, w: 1116, h: 350 },
+      z: 15,
+      open: true,
+      minimized: false,
+      maximized: false,
+    },
+    pianoroll: {
+      id: "pianoroll",
+      rect: { x: 310, y: 48, w: 920, h: 420 },
+      z: 25,
+      open: false,
+      minimized: false,
+      maximized: false,
+    },
+    playlist: {
+      id: "playlist",
+      rect: { x: 330, y: 64, w: 940, h: 400 },
+      z: 24,
+      open: false,
+      minimized: false,
+      maximized: false,
+    },
+  };
+}
+
+interface HistorySnapshot {
+  readonly channels: QlChannel[];
+  readonly patterns: QlPattern[];
+  readonly activePatternId: string;
+}
+
+export const App: React.FC = () => {
+  const engineClient = useMemo(() => new QlNativeEngineClient(), []);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const wavInputRef = useRef<HTMLInputElement | null>(null);
+  const wavTargetChannelRef = useRef<string>("ch_0");
+
+  const [projectTitle, setProjectTitle] = useState("Ql Studio — Audio Production Session");
+  const [bpm, setBpm] = useState(140.0);
+  const [ppq, setPpq] = useState<PpqResolution>(96);
+  const [swingRatio, setSwingRatio] = useState(0.5);
+  const [mode, setMode] = useState<PlaybackMode>("pattern");
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [songTick, setSongTick] = useState(0);
+  const [activeStep, setActiveStep] = useState(0);
+  const [masterVolumeDb, setMasterVolumeDb] = useState(0.0);
+  const [masterPitchCents, setMasterPitchCents] = useState(0);
+
+  const [channels, setChannels] = useState<QlChannel[]>(INITIAL_CHANNELS);
+  const [patterns, setPatterns] = useState<QlPattern[]>(() => [
+    createDefaultPattern("pat_1", 1, "Pattern 1 (Main Beat)", INITIAL_CHANNELS, "trap_140"),
+    createDefaultPattern("pat_2", 2, "Pattern 2 (Variation)", INITIAL_CHANNELS, "basic_808"),
+  ]);
+  const [activePatternId, setActivePatternId] = useState("pat_1");
+  const [selectedChannelId, setSelectedChannelId] = useState("ch_0");
+  const [mixer, setMixer] = useState<QlMixerState>(() => createDefaultMixerState(64));
+  const [selectedInsert, setSelectedInsert] = useState(0);
+  const [customWavItems, setCustomWavItems] = useState<BrowserItem[]>([]);
+  const [copiedPatternData, setCopiedPatternData] = useState<Record<string, QlChannelPatternData> | null>(null);
+
+  // Undo / Redo stacks
+  const [undoStack, setUndoStack] = useState<HistorySnapshot[]>([]);
+  const [redoStack, setRedoStack] = useState<HistorySnapshot[]>([]);
+
+  // Audio settings & modals
+  const [audioSettings, setAudioSettings] = useState<AudioSettingsSnapshot>({
+    deviceName: "PipeWire / ALSA Studio Output",
+    sampleRate: 48000,
+    bufferSizeFrames: 1024,
+    availableBufferSizes: [256, 512, 1024, 2048],
+    streamActive: true,
+  });
+  const [audioModalOpen, setAudioModalOpen] = useState(false);
+  const [aboutModalOpen, setAboutModalOpen] = useState(false);
+
+  // Playlist arrangement state: patternId -> 8 bar toggles
+  const [playlistGrid, setPlaylistGrid] = useState<Record<string, boolean[]>>({
+    pat_1: [true, true, true, false, true, true, false, false],
+    pat_2: [false, false, false, true, false, false, true, true],
+  });
+
+  const [statusMessage, setStatusMessage] = useState(
+    "Ready · Crackle-Free Fixed Buffer (1024 smp) · F6 Rack · F7 Piano Roll · F9 Mixer · F11 Fullscreen",
+  );
+
+  const [utilities, setUtilities] = useState<UtilitySwitches>({
+    metronome: false,
+    typingKeyboard: true,
+    countdown: false,
+    loopRecord: true,
+    stepEdit: false,
+  });
+
+  const [windows, setWindows] = useState<Record<string, WindowState>>(defaultWindowsLayout);
+
+  const [insertLevels, setInsertLevels] = useState<readonly (readonly [number, number])[]>(
+    () => Array.from({ length: 65 }, () => [0, 0] as const),
+  );
+  const [stats, setStats] = useState<SystemStats>({
+    uiLoadPercent: 3,
+    memoryMb: 48,
+    polyphony: 0,
+    maxPolyphony: 64,
+  });
+
+  const activePattern = useMemo(
+    () => patterns.find((p) => p.id === activePatternId) ?? patterns[0]!,
+    [patterns, activePatternId],
+  );
+
+  const pushHistory = useCallback(() => {
+    setUndoStack((prev) => [
+      ...prev.slice(-24),
+      { channels, patterns, activePatternId },
+    ]);
+    setRedoStack([]);
+  }, [channels, patterns, activePatternId]);
+
+  const handleUndo = useCallback(() => {
+    setUndoStack((prev) => {
+      if (prev.length === 0) return prev;
+      const last = prev[prev.length - 1]!;
+      setRedoStack((r) => [...r, { channels, patterns, activePatternId }]);
+      setChannels(last.channels);
+      setPatterns(last.patterns);
+      setActivePatternId(last.activePatternId);
+      setStatusMessage("Undo applied (Ctrl+Z)");
+      return prev.slice(0, -1);
+    });
+  }, [channels, patterns, activePatternId]);
+
+  const handleRedo = useCallback(() => {
+    setRedoStack((prev) => {
+      if (prev.length === 0) return prev;
+      const next = prev[prev.length - 1]!;
+      setUndoStack((u) => [...u, { channels, patterns, activePatternId }]);
+      setChannels(next.channels);
+      setPatterns(next.patterns);
+      setActivePatternId(next.activePatternId);
+      setStatusMessage("Redo applied (Ctrl+Y)");
+      return prev.slice(0, -1);
+    });
+  }, [channels, patterns, activePatternId]);
+
+  const mutateActivePattern = useCallback(
+    (updater: (pat: QlPattern) => QlPattern) => {
+      setPatterns((prev) =>
+        prev.map((p) => (p.id === activePattern.id ? updater(p) : p)),
+      );
+    },
+    [activePattern.id],
+  );
+
+  // Fetch initial audio settings
+  useEffect(() => {
+    void engineClient
+      .getAudioSettings()
+      .then((s) => setAudioSettings(s))
+      .catch(() => {});
+  }, [engineClient]);
+
+  // Sync pattern + channels to native Rust core
+  useEffect(() => {
+    void engineClient.updatePattern(activePattern, channels).catch(() => {});
+  }, [engineClient, activePattern, channels]);
+
+  // Sync mixer graph to native Rust core
+  useEffect(() => {
+    void engineClient.updateMixerGraph(mixer).catch(() => {});
+  }, [engineClient, mixer]);
+
+  const focusWindow = useCallback((id: string) => {
+    setWindows((prev) => {
+      const maxZ = Math.max(...Object.values(prev).map((w) => w.z));
+      const target = prev[id];
+      if (!target || target.z === maxZ) return prev;
+      return { ...prev, [id]: { ...target, z: maxZ + 1 } };
+    });
+  }, []);
+
+  const updateWindow = useCallback((id: string, patch: Partial<WindowState>) => {
+    setWindows((prev) => {
+      const cur = prev[id];
+      if (!cur) return prev;
+      return { ...prev, [id]: { ...cur, ...patch } };
+    });
+  }, []);
+
+  const toggleWindow = useCallback((id: string) => {
+    setWindows((prev) => {
+      const cur = prev[id];
+      if (!cur) return prev;
+      const maxZ = Math.max(...Object.values(prev).map((w) => w.z));
+      return {
+        ...prev,
+        [id]: { ...cur, open: !cur.open, minimized: false, z: maxZ + 1 },
+      };
+    });
+  }, []);
+
+  const handleToggleFullscreen = useCallback(async () => {
+    const next = await engineClient.toggleFullscreen();
+    setIsFullscreen(next);
+    setStatusMessage(
+      next
+        ? "Entered Fullscreen Workstation Mode (Press F11 to exit)"
+        : "Exited Fullscreen Workstation Mode",
+    );
+  }, [engineClient]);
+
+  // Global DAW Keyboard Shortcuts
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.tagName === "INPUT") return;
+      if (e.code === "Space") {
+        e.preventDefault();
+        if (isPlaying) {
+          void engineClient.pause().then((s) => setIsPlaying(s.isPlaying));
+        } else {
+          void engineClient.play().then((s) => setIsPlaying(s.isPlaying));
+        }
+      } else if (e.key === "F5") {
+        e.preventDefault();
+        toggleWindow("playlist");
+      } else if (e.key === "F6") {
+        e.preventDefault();
+        toggleWindow("rack");
+      } else if (e.key === "F7") {
+        e.preventDefault();
+        toggleWindow("pianoroll");
+      } else if (e.key === "F8" && e.altKey) {
+        e.preventDefault();
+        toggleWindow("browser");
+      } else if (e.key === "F9") {
+        e.preventDefault();
+        toggleWindow("mixer");
+      } else if (e.key === "F10") {
+        e.preventDefault();
+        setAudioModalOpen((v) => !v);
+      } else if (e.key === "F11") {
+        e.preventDefault();
+        void handleToggleFullscreen();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        handleUndo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [engineClient, isPlaying, toggleWindow, handleToggleFullscreen, handleUndo, handleRedo]);
+
+  // Playhead, Song Tick, and Real-Time Peak Meter / Polyphony animation loop
+  useEffect(() => {
+    let rafId = 0;
+    const startMs = performance.now();
+    let prevStep = -1;
+    const decayLevels = Array.from({ length: 65 }, () => [0, 0] as [number, number]);
+
+    let maxDecay = 0;
+    const tickLoop = (nowMs: number) => {
+      maxDecay = 0;
+      for (let i = 0; i < 65; i++) {
+        decayLevels[i]![0] *= 0.88;
+        decayLevels[i]![1] *= 0.88;
+        if (decayLevels[i]![0] > maxDecay) maxDecay = decayLevels[i]![0];
+        if (decayLevels[i]![1] > maxDecay) maxDecay = decayLevels[i]![1];
+      }
+
+      let activeVoices = 0;
+      if (isPlaying) {
+        const elapsedSec = (nowMs - startMs) / 1000.0;
+        const ticksPerSec = (bpm / 60.0) * ppq;
+        const currentTick = Math.floor(elapsedSec * ticksPerSec);
+        const ticksPerStep = ppq / 4;
+        const stepIdx =
+          Math.floor(currentTick / ticksPerStep) % activePattern.stepCount;
+
+        setSongTick(currentTick);
+        setActiveStep(stepIdx);
+
+        const anySolo = channels.some((c) => c.solo);
+        if (stepIdx !== prevStep) {
+          prevStep = stepIdx;
+          for (const ch of channels) {
+            const audible = anySolo ? ch.solo : !ch.muted;
+            if (!audible) continue;
+            const st = activePattern.channelData[ch.id]?.steps[stepIdx];
+            if (st?.active) {
+              activeVoices += 1;
+              const vel = st.velocity / 127;
+              const chGain = Math.pow(10, ch.volumeDb / 20) * vel;
+              const panAngle = ((ch.pan + 1) * Math.PI) / 4;
+              const l = Math.min(1, chGain * Math.cos(panAngle) * 1.3);
+              const r = Math.min(1, chGain * Math.sin(panAngle) * 1.3);
+              const targetIns = Math.min(64, Math.max(0, ch.assignedMixerInsert));
+              const insStrip = mixer.inserts[targetIns];
+              if (insStrip && !insStrip.muted) {
+                const faderGain = Math.pow(10, insStrip.faderVolumeDb / 20);
+                decayLevels[targetIns]![0] = Math.max(
+                  decayLevels[targetIns]![0],
+                  l * faderGain,
+                );
+                decayLevels[targetIns]![1] = Math.max(
+                  decayLevels[targetIns]![1],
+                  r * faderGain,
+                );
+                decayLevels[0]![0] = Math.min(
+                  1,
+                  decayLevels[0]![0] + l * faderGain * 0.65,
+                );
+                decayLevels[0]![1] = Math.min(
+                  1,
+                  decayLevels[0]![1] + r * faderGain * 0.65,
+                );
+              }
+            }
+          }
+        }
+      }
+
+      if (isPlaying || maxDecay > 0.002) {
+        setInsertLevels(decayLevels.map(([l, r]) => [l, r] as const));
+        setStats((prev) => ({
+          ...prev,
+          uiLoadPercent: isPlaying ? 5 + activeVoices * 2 : 2,
+          polyphony: isPlaying ? Math.max(activeVoices, decayLevels[0]![0] > 0.15 ? 2 : 0) : 0,
+        }));
+        rafId = requestAnimationFrame(tickLoop);
+      } else {
+        setInsertLevels(decayLevels.map(() => [0, 0] as const));
+        setStats((prev) => ({
+          ...prev,
+          uiLoadPercent: 1,
+          polyphony: 0,
+        }));
+      }
+    };
+
+    rafId = requestAnimationFrame(tickLoop);
+    return () => cancelAnimationFrame(rafId);
+  }, [isPlaying, bpm, ppq, activePattern, channels, mixer.inserts]);
+
+  const handlePlayPause = useCallback(async () => {
+    if (isPlaying) {
+      const snap = await engineClient.pause();
+      setIsPlaying(snap.isPlaying);
+    } else {
+      const snap = await engineClient.play();
+      setIsPlaying(snap.isPlaying);
+    }
+  }, [engineClient, isPlaying]);
+
+  const handleStop = useCallback(async () => {
+    const snap = await engineClient.stop();
+    setIsPlaying(snap.isPlaying);
+    setSongTick(0);
+    setActiveStep(0);
+  }, [engineClient]);
+
+  const handleBpmChange = useCallback(
+    async (nextBpm: number) => {
+      setBpm(nextBpm);
+      await engineClient.setBpm(nextBpm).catch(() => {});
+    },
+    [engineClient],
+  );
+
+  const handleMasterVolumeChange = useCallback((db: number) => {
+    setMasterVolumeDb(db);
+    setMixer((prev) => ({
+      ...prev,
+      inserts: prev.inserts.map((ins) =>
+        ins.index === 0 ? { ...ins, faderVolumeDb: db } : ins,
+      ),
+    }));
+  }, []);
+
+  const handleUpdateStep = useCallback(
+    (channelId: string, stepIndex: number, patch: Partial<QlStep>) => {
+      pushHistory();
+      mutateActivePattern((pat) => {
+        const existing = pat.channelData[channelId] ?? {
+          channelId,
+          steps: Array.from({ length: pat.stepCount }, () => createStep()),
+          notes: [],
+        };
+        const padded = Array.from(
+          { length: pat.stepCount },
+          (_, i) => existing.steps[i] ?? createStep(),
+        );
+        padded[stepIndex] = { ...padded[stepIndex]!, ...patch };
+        return {
+          ...pat,
+          channelData: {
+            ...pat.channelData,
+            [channelId]: { ...existing, steps: padded },
+          },
+        };
+      });
+    },
+    [mutateActivePattern, pushHistory],
+  );
+
+  const handleUpdateChannel = useCallback(
+    (channelId: string, patch: ChannelPatch) => {
+      setChannels((prev) =>
+        prev.map((ch) => (ch.id === channelId ? { ...ch, ...patch } : ch)),
+      );
+    },
+    [],
+  );
+
+  const handleLoadWavPathForChannel = useCallback(
+    async (channelId: string, path: string) => {
+      try {
+        const summary = await engineClient.loadSampleFile(channelId, path);
+        setChannels((prev) =>
+          prev.map((ch) =>
+            ch.id === channelId
+              ? {
+                  ...ch,
+                  name: summary.name,
+                  sampleSlot: summary.slotIndex,
+                  samplePath: summary.sourcePath,
+                  generator: {
+                    kind: "sampler_pcm",
+                    assetId: `slot_${summary.slotIndex}`,
+                    sampleRate: summary.engineSampleRate,
+                    channels: 2,
+                    lengthFrames: summary.frameCount,
+                    loopStartFrame: null,
+                    loopEndFrame: null,
+                    interpolation: "hermite_cubic",
+                  },
+                }
+              : ch,
+          ),
+        );
+        setCustomWavItems((prev) => {
+          const id = `custom_wav_${summary.slotIndex}`;
+          const item: BrowserItem = {
+            id,
+            name: `${summary.name} (.wav)`,
+            kind: "audio",
+            waveform: "sampler_pcm",
+            rootMidiNote: 60,
+            sampleSlot: summary.slotIndex,
+            samplePath: summary.sourcePath,
+          };
+          return [...prev.filter((x) => x.id !== id), item];
+        });
+        setStatusMessage(
+          `Loaded WAV '${summary.name}' (${summary.originalSampleRate}Hz -> ${summary.engineSampleRate}Hz Hermite, ${summary.durationSeconds.toFixed(2)}s) into slot #${summary.slotIndex}`,
+        );
+      } catch (err) {
+        setStatusMessage(`WAV load error: ${String(err)}`);
+      }
+    },
+    [engineClient],
+  );
+
+  const handleOpenWavDialogForChannel = useCallback(
+    async (channelId: string) => {
+      wavTargetChannelRef.current = channelId;
+      if (engineClient.isNativeRuntime) {
+        const summary = await engineClient.openAndLoadWavDialog(channelId);
+        if (summary) {
+          await handleLoadWavPathForChannel(channelId, summary.sourcePath);
+        }
+      } else {
+        wavInputRef.current?.click();
+      }
+    },
+    [engineClient, handleLoadWavPathForChannel],
+  );
+
+  const handleFillChannelSteps = useCallback(
+    (channelId: string, every: 2 | 4) => {
+      pushHistory();
+      mutateActivePattern((pat) => {
+        const existing = pat.channelData[channelId] ?? {
+          channelId,
+          steps: [],
+          notes: [],
+        };
+        const steps = Array.from({ length: pat.stepCount }, (_, i) =>
+          createStep(i % every === 0, i % 4 === 0 ? 112 : 94),
+        );
+        return {
+          ...pat,
+          channelData: {
+            ...pat.channelData,
+            [channelId]: { ...existing, steps },
+          },
+        };
+      });
+      setStatusMessage(`Filled channel steps every ${every} steps`);
+    },
+    [mutateActivePattern, pushHistory],
+  );
+
+  const handleChannelAction = useCallback(
+    (channelId: string, action: ChannelAction) => {
+      const target = channels.find((c) => c.id === channelId);
+      if (!target) return;
+      if (action === "load_wav") {
+        void handleOpenWavDialogForChannel(channelId);
+      } else if (action === "fill_2") {
+        handleFillChannelSteps(channelId, 2);
+      } else if (action === "fill_4") {
+        handleFillChannelSteps(channelId, 4);
+      } else if (action === "clear_steps") {
+        pushHistory();
+        mutateActivePattern((pat) => ({
+          ...pat,
+          channelData: {
+            ...pat.channelData,
+            [channelId]: {
+              channelId,
+              steps: Array.from({ length: pat.stepCount }, () => createStep(false)),
+              notes: [],
+            },
+          },
+        }));
+        setStatusMessage(`Cleared steps for '${target.name}'`);
+      } else if (action === "rename") {
+        const nextName = window.prompt("Rename channel:", target.name);
+        if (nextName && nextName.trim()) {
+          handleUpdateChannel(channelId, { name: nextName.trim() });
+        }
+      } else if (action === "color") {
+        const idx = CHANNEL_COLORS.indexOf(target.colorHex);
+        const nextColor =
+          CHANNEL_COLORS[(idx + 1) % CHANNEL_COLORS.length] ?? "#ff8500";
+        handleUpdateChannel(channelId, { colorHex: nextColor });
+      } else if (action === "clone") {
+        pushHistory();
+        const newId = `ch_${Date.now()}`;
+        const cloned: QlChannel = {
+          ...target,
+          id: newId,
+          index: channels.length,
+          name: `${target.name} (Clone)`,
+        };
+        setChannels((prev) => [...prev, cloned]);
+        mutateActivePattern((pat) => ({
+          ...pat,
+          channelData: {
+            ...pat.channelData,
+            [newId]: {
+              channelId: newId,
+              steps: [...(pat.channelData[channelId]?.steps ?? [])],
+              notes: [...(pat.channelData[channelId]?.notes ?? [])],
+            },
+          },
+        }));
+      } else if (action === "delete" && channels.length > 1) {
+        pushHistory();
+        setChannels((prev) => prev.filter((c) => c.id !== channelId));
+      }
+    },
+    [
+      channels,
+      handleOpenWavDialogForChannel,
+      handleFillChannelSteps,
+      handleUpdateChannel,
+      mutateActivePattern,
+      pushHistory,
+    ],
+  );
+
+  const handleReplaceGenerator = useCallback(
+    (channelId: string, item: BrowserItem) => {
+      pushHistory();
+      if (item.waveform === "sampler_pcm" && item.samplePath && item.sampleSlot === undefined) {
+        void handleLoadWavPathForChannel(channelId, item.samplePath);
+        return;
+      }
+      setChannels((prev) =>
+        prev.map((ch) =>
+          ch.id === channelId
+            ? {
+                ...ch,
+                name: item.name,
+                rootMidiNote: item.rootMidiNote,
+                sampleSlot: item.sampleSlot,
+                samplePath: item.samplePath,
+                generator:
+                  item.waveform === "sampler_pcm"
+                    ? {
+                        kind: "sampler_pcm",
+                        assetId: `slot_${item.sampleSlot ?? 0}`,
+                        sampleRate: 48000,
+                        channels: 2,
+                        lengthFrames: 24000,
+                        loopStartFrame: null,
+                        loopEndFrame: null,
+                        interpolation: "hermite_cubic",
+                      }
+                    : {
+                        kind: "oscillator_synth",
+                        oscillators: [
+                          {
+                            waveform: item.waveform,
+                            coarseSemitones: 0,
+                            fineCents: 0,
+                            mixLevel: 1.0,
+                            pulseWidth: 0.5,
+                          },
+                        ],
+                      },
+              }
+            : ch,
+        ),
+      );
+      setStatusMessage(
+        `Assigned '${item.name}' (${item.waveform === "sampler_pcm" ? "PCM WAV Slot #" + (item.sampleSlot ?? 0) : item.waveform}) to channel`,
+      );
+    },
+    [pushHistory, handleLoadWavPathForChannel],
+  );
+
+  const handleAddGeneratorChannel = useCallback(
+    (kind: "sampler" | "synth" | "automation") => {
+      pushHistory();
+      const idx = channels.length;
+      const newId = `ch_${Date.now()}`;
+      const colorHex = CHANNEL_COLORS[idx % CHANNEL_COLORS.length] ?? "#ff8500";
+      const isSampler = kind === "sampler";
+      const nextChan: QlChannel = {
+        id: newId,
+        index: idx,
+        name:
+          kind === "sampler"
+            ? `PCM Sampler ${idx + 1} (.wav)`
+            : kind === "automation"
+              ? `Sub-Bass / Auto ${idx + 1}`
+              : `PolyBLEP Synth ${idx + 1}`,
+        colorHex,
+        generator: isSampler
+          ? {
+              kind: "sampler_pcm",
+              assetId: "slot_0",
+              sampleRate: 48000,
+              channels: 2,
+              lengthFrames: 24000,
+              loopStartFrame: null,
+              loopEndFrame: null,
+              interpolation: "hermite_cubic",
+            }
+          : {
+              kind: "oscillator_synth",
+              oscillators: [
+                {
+                  waveform: kind === "automation" ? "sine" : "sawtooth",
+                  coarseSemitones: 0,
+                  fineCents: 0,
+                  mixLevel: 1.0,
+                  pulseWidth: 0.5,
+                },
+              ],
+            },
+        pan: 0,
+        volumeDb: 0,
+        rootMidiNote: kind === "automation" ? 42 : 60,
+        pitchSemitones: 0,
+        pitchCents: 0,
+        swingMultiplier: 1.0,
+        muted: false,
+        solo: false,
+        assignedMixerInsert: (idx % 64) + 1,
+        sampleSlot: isSampler ? 0 : undefined,
+        samplePath: isSampler ? "samples/kick_808.wav" : undefined,
+      };
+      setChannels((prev) => [...prev, nextChan]);
+      setSelectedChannelId(newId);
+      setStatusMessage(`Added ${nextChan.name}`);
+    },
+    [channels.length, pushHistory],
+  );
+
+  const handleNewFromTemplate = useCallback(
+    (template: ProjectTemplateId) => {
+      pushHistory();
+      const nextTitle =
+        template === "empty"
+          ? "Ql Studio — Empty Template"
+          : template === "basic_808"
+            ? "Ql Studio — Basic 808 Studio Kit"
+            : "Ql Studio — Trap 140 BPM Session";
+      setProjectTitle(nextTitle);
+      setBpm(template === "basic_808" ? 128 : 140);
+      setChannels(INITIAL_CHANNELS);
+      const pat = createDefaultPattern("pat_1", 1, "Pattern 1", INITIAL_CHANNELS, template);
+      setPatterns([pat]);
+      setActivePatternId("pat_1");
+      setStatusMessage(`Initialized template: ${nextTitle}`);
+    },
+    [pushHistory],
+  );
+
+  const handleCutSteps = useCallback(() => {
+    pushHistory();
+    setCopiedPatternData(activePattern.channelData);
+    mutateActivePattern((pat) => {
+      const cleared: Record<string, QlChannelPatternData> = {};
+      for (const ch of channels) {
+        cleared[ch.id] = {
+          channelId: ch.id,
+          steps: Array.from({ length: pat.stepCount }, () => createStep(false)),
+          notes: [],
+        };
+      }
+      return { ...pat, channelData: cleared };
+    });
+    setStatusMessage(`Cut steps from '${activePattern.name}'`);
+  }, [activePattern, channels, mutateActivePattern, pushHistory]);
+
+  const handleCopyPattern = useCallback(() => {
+    setCopiedPatternData(activePattern.channelData);
+    setStatusMessage(`Copied '${activePattern.name}' to clipboard`);
+  }, [activePattern]);
+
+  const handlePastePattern = useCallback(() => {
+    if (!copiedPatternData) {
+      setStatusMessage("Pattern clipboard is empty");
+      return;
+    }
+    pushHistory();
+    mutateActivePattern((pat) => ({
+      ...pat,
+      channelData: { ...copiedPatternData },
+    }));
+    setStatusMessage(`Pasted clipboard steps into '${activePattern.name}'`);
+  }, [copiedPatternData, activePattern.name, mutateActivePattern, pushHistory]);
+
+  const handleClearPattern = useCallback(() => {
+    pushHistory();
+    mutateActivePattern((pat) => {
+      const cleared: Record<string, QlChannelPatternData> = {};
+      for (const ch of channels) {
+        cleared[ch.id] = {
+          channelId: ch.id,
+          steps: Array.from({ length: pat.stepCount }, () => createStep(false)),
+          notes: [],
+        };
+      }
+      return { ...pat, channelData: cleared };
+    });
+    setStatusMessage(`Cleared all steps in '${activePattern.name}'`);
+  }, [activePattern.name, channels, mutateActivePattern, pushHistory]);
+
+  const handleNewPattern = useCallback(() => {
+    pushHistory();
+    const nextIdx = patterns.length + 1;
+    const newId = `pat_${nextIdx}`;
+    const pat = createDefaultPattern(
+      newId,
+      nextIdx,
+      `Pattern ${nextIdx}`,
+      channels,
+      "empty",
+    );
+    setPatterns((prev) => [...prev, pat]);
+    setActivePatternId(newId);
+    setStatusMessage(`Created Pattern ${nextIdx}`);
+  }, [patterns.length, channels, pushHistory]);
+
+  const handleClonePattern = useCallback(() => {
+    pushHistory();
+    const nextIdx = patterns.length + 1;
+    const newId = `pat_${Date.now()}`;
+    const cloned: QlPattern = {
+      ...activePattern,
+      id: newId,
+      index: nextIdx,
+      name: `${activePattern.name} (Clone)`,
+    };
+    setPatterns((prev) => [...prev, cloned]);
+    setActivePatternId(newId);
+    setStatusMessage(`Cloned '${activePattern.name}'`);
+  }, [activePattern, patterns.length, pushHistory]);
+
+  const handleSplitByChannel = useCallback(() => {
+    pushHistory();
+    const splitPatterns: QlPattern[] = [];
+    channels.forEach((ch, idx) => {
+      const chData = activePattern.channelData[ch.id];
+      const hasActive = chData?.steps.some((s) => s.active) || (chData?.notes.length ?? 0) > 0;
+      if (!hasActive) return;
+      const newId = `pat_split_${ch.id}_${Date.now()}`;
+      splitPatterns.push({
+        ...activePattern,
+        id: newId,
+        index: patterns.length + splitPatterns.length + 1,
+        name: `${activePattern.name} — ${ch.name}`,
+        channelData: {
+          [ch.id]: chData!,
+        },
+      });
+    });
+    if (splitPatterns.length === 0) {
+      setStatusMessage("No active channels to split in current pattern");
+      return;
+    }
+    setPatterns((prev) => [...prev, ...splitPatterns]);
+    setActivePatternId(splitPatterns[0]!.id);
+    setStatusMessage(`Split '${activePattern.name}' into ${splitPatterns.length} channel patterns`);
+  }, [activePattern, channels, patterns.length, pushHistory]);
+
+  const handleTransposePattern = useCallback(
+    (semitones: number) => {
+      pushHistory();
+      mutateActivePattern((pat) => {
+        const nextData: Record<string, QlChannelPatternData> = {};
+        for (const [chId, data] of Object.entries(pat.channelData)) {
+          nextData[chId] = {
+            ...data,
+            steps: data.steps.map((s) => ({
+              ...s,
+              pitchOffsetSemitones: Math.max(-24, Math.min(24, s.pitchOffsetSemitones + semitones)),
+            })),
+            notes: data.notes.map((n) => ({
+              ...n,
+              midiNote: Math.max(0, Math.min(127, n.midiNote + semitones)),
+            })),
+          };
+        }
+        return { ...pat, channelData: nextData };
+      });
+      setStatusMessage(
+        `Transposed '${activePattern.name}' by ${semitones > 0 ? `+${semitones}` : semitones} semitones`,
+      );
+    },
+    [activePattern.name, mutateActivePattern, pushHistory],
+  );
+
+  const handleStepCountChange = useCallback(
+    (stepCount: number) => {
+      mutateActivePattern((pat) => ({ ...pat, stepCount }));
+    },
+    [mutateActivePattern],
+  );
+
+  const handleUpdateInsert = useCallback(
+    (index: number, patch: InsertPatch) => {
+      setMixer((prev) => ({
+        ...prev,
+        inserts: prev.inserts.map((ins) =>
+          ins.index === index ? { ...ins, ...patch } : ins,
+        ),
+      }));
+    },
+    [],
+  );
+
+  const handleSetEffect = useCallback(
+    (insertIndex: number, slotIndex: number, config: InsertEffectConfig | null) => {
+      setMixer((prev) => ({
+        ...prev,
+        inserts: prev.inserts.map((ins) => {
+          if (ins.index !== insertIndex) return ins;
+          const filtered = ins.effectSlots.filter((s) => s.slotIndex !== slotIndex);
+          if (!config) return { ...ins, effectSlots: filtered };
+          return {
+            ...ins,
+            effectSlots: [
+              ...filtered,
+              { slotIndex, bypassed: false, wetMix: 1.0, config },
+            ],
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  const handleToggleBypass = useCallback((insertIndex: number, slotIndex: number) => {
+    setMixer((prev) => ({
+      ...prev,
+      inserts: prev.inserts.map((ins) => {
+        if (ins.index !== insertIndex) return ins;
+        return {
+          ...ins,
+          effectSlots: ins.effectSlots.map((s) =>
+            s.slotIndex === slotIndex ? { ...s, bypassed: !s.bypassed } : s,
+          ),
+        };
+      }),
+    }));
+  }, []);
+
+  const hydrateFromPayload = useCallback((payload: QlProjectPayload) => {
+    setProjectTitle(payload.title);
+    setBpm(payload.bpm);
+    setPpq(payload.ppq);
+    setSwingRatio(payload.globalSwingRatio);
+    const hydratedChans = payload.channels.map(fromNativeChannelPayload);
+    setChannels(hydratedChans);
+    if (hydratedChans[0]) setSelectedChannelId(hydratedChans[0].id);
+    if (payload.patterns.length > 0) {
+      setPatterns([...payload.patterns]);
+      setActivePatternId(payload.patterns[0]!.id);
+    }
+    setStatusMessage(
+      `Imported '${payload.title}' · ${hydratedChans.length} channels · ${payload.ppq} PPQ · ${payload.bpm.toFixed(1)} BPM (${payload.rawEventCount} TLV events)`,
+    );
+  }, []);
+
+  const handleOpenFlp = useCallback(async () => {
+    if (engineClient.isNativeRuntime) {
+      try {
+        const payload = await engineClient.openAndImportFlpDialog();
+        if (payload) hydrateFromPayload(payload);
+        return;
+      } catch (err) {
+        setStatusMessage(`FLP dialog error: ${String(err)}`);
+      }
+    }
+    fileInputRef.current?.click();
+  }, [engineClient, hydrateFromPayload]);
+
+  const handleBrowserFlpSelect = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      const bytes = file
+        ? new Uint8Array(await file.arrayBuffer())
+        : buildCleanRoomSampleFlp({
+            title: "Ql Studio Clean-Room Demo",
+            bpm: 140.0,
+            ppq: 96,
+            channelNames: ["808 Kick", "Crisp Clap", "Closed Hat", "Sub Bass"],
+          });
+      try {
+        const parsed = parseFlpBinary(bytes);
+        const title = parsed.derivedTitle ?? (file?.name.replace(/\.flp$/i, "") || "Demo FLP");
+        const nextBpm = parsed.derivedBpm ?? 140.0;
+        const names = parsed.events
+          .filter((ev) => ev.eventId === 192 && ev.textUtf8)
+          .map((ev) => ev.textUtf8!);
+        const nextChans: QlChannel[] = (names.length > 0 ? names : ["Channel 1", "Channel 2"]).map(
+          (name, idx) => ({
+            id: `ch_${idx}`,
+            index: idx,
+            name,
+            colorHex: CHANNEL_COLORS[idx % CHANNEL_COLORS.length] ?? "#ff8500",
+            generator: {
+              kind: "sampler_pcm",
+              assetId: `slot_${idx % 4}`,
+              sampleRate: 48000,
+              channels: 2,
+              lengthFrames: 24000,
+              loopStartFrame: null,
+              loopEndFrame: null,
+              interpolation: "hermite_cubic",
+            },
+            pan: 0,
+            volumeDb: 0,
+            rootMidiNote: 60,
+            pitchSemitones: 0,
+            pitchCents: 0,
+            swingMultiplier: 1.0,
+            muted: false,
+            solo: false,
+            assignedMixerInsert: (idx % 64) + 1,
+            sampleSlot: idx % 4,
+          }),
+        );
+        setProjectTitle(title);
+        setBpm(nextBpm);
+        setPpq(parsed.header.ppq);
+        setChannels(nextChans);
+        const pat = createDefaultPattern("pat_1", 1, "Pattern 1", nextChans, "trap_140");
+        setPatterns([pat]);
+        setActivePatternId(pat.id);
+        setStatusMessage(
+          `Imported '${title}' · ${nextChans.length} channels · ${parsed.header.ppq} PPQ · ${nextBpm.toFixed(1)} BPM (${parsed.events.length} TLV events)`,
+        );
+      } catch (err) {
+        setStatusMessage(`FLP import failed: ${String(err)}`);
+      }
+    },
+    [],
+  );
+
+  const handleBrowserWavSelect = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0] as (File & { path?: string }) | undefined;
+      if (!file) return;
+      await handleLoadWavPathForChannel(
+        wavTargetChannelRef.current,
+        file.path ?? file.name,
+      );
+    },
+    [handleLoadWavPathForChannel],
+  );
+
+  const handleSaveOrExportProject = useCallback(() => {
+    const blob = new Blob(
+      [
+        JSON.stringify(
+          {
+            schemaVersion: "1.0.0",
+            title: projectTitle,
+            bpm,
+            ppq,
+            swingRatio,
+            channels,
+            patterns,
+            mixer,
+          },
+          null,
+          2,
+        ),
+      ],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${projectTitle.toLowerCase().replace(/\s+/g, "-")}.qlproj.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setStatusMessage(`Saved '${projectTitle}' to .qlproj.json`);
+  }, [projectTitle, bpm, ppq, swingRatio, channels, patterns, mixer]);
+
+  const handleExportWav = useCallback(async () => {
+    try {
+      const outPath = await engineClient.exportWavDialog(2);
+      if (outPath) {
+        setStatusMessage(`Exported 2-bar stereo PCM WAV mixdown via hound -> ${outPath}`);
+      }
+    } catch (err) {
+      setStatusMessage(`WAV export error: ${String(err)}`);
+    }
+  }, [engineClient]);
+
+  const handleChangeBufferSize = useCallback(
+    async (bufFrames: number) => {
+      try {
+        const snap = await engineClient.setAudioBufferSize(bufFrames);
+        setAudioSettings(snap);
+        setStatusMessage(
+          `Audio engine reconfigured to Fixed(${snap.bufferSizeFrames}) frames @ ${snap.sampleRate} Hz (${((snap.bufferSizeFrames / snap.sampleRate) * 1000).toFixed(1)} ms latency)`,
+        );
+      } catch (err) {
+        setStatusMessage(`Failed to set buffer size: ${String(err)}`);
+      }
+    },
+    [engineClient],
+  );
+
+  // Piano roll note toggle for selected channel
+  const handleTogglePianoRollNote = useCallback(
+    (stepIdx: number, midiNote: number, isSlide = false) => {
+      pushHistory();
+      const startTick = stepIdx * (ppq / 4);
+      const durTicks = ppq / 4;
+      mutateActivePattern((pat) => {
+        const chData = pat.channelData[selectedChannelId] ?? {
+          channelId: selectedChannelId,
+          steps: Array.from({ length: pat.stepCount }, () => createStep()),
+          notes: [],
+        };
+        const existingIdx = chData.notes.findIndex(
+          (n) => n.startTick === startTick && n.midiNote === midiNote,
+        );
+        let nextNotes: QlPianoRollNote[];
+        if (existingIdx >= 0) {
+          nextNotes = chData.notes.filter((_, i) => i !== existingIdx);
+        } else {
+          nextNotes = [
+            ...chData.notes,
+            {
+              id: `note_${Date.now()}_${stepIdx}_${midiNote}`,
+              startTick,
+              durationTicks: durTicks,
+              midiNote,
+              velocity: 108,
+              releaseVelocity: 64,
+              finePan: 0,
+              finePitchCents: 0,
+              filterCutoffNorm: 0,
+              filterResonanceNorm: 0,
+              voiceColorGroup: 0,
+              isSlideNote: isSlide,
+              isPortaNote: false,
+            },
+          ];
+        }
+        return {
+          ...pat,
+          channelData: {
+            ...pat.channelData,
+            [selectedChannelId]: { ...chData, notes: nextNotes },
+          },
+        };
+      });
+    },
+    [selectedChannelId, ppq, mutateActivePattern, pushHistory],
+  );
+
+  const insertsInUse = useMemo(
+    () => new Set(channels.map((c) => c.assignedMixerInsert)),
+    [channels],
+  );
+
+  const selectedChannel =
+    channels.find((c) => c.id === selectedChannelId) ?? channels[0]!;
+
+  return (
+    <div className="h-screen w-screen flex flex-col bg-fl-base overflow-hidden select-none">
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".flp"
+        onChange={handleBrowserFlpSelect}
+        className="hidden"
+      />
+      <input
+        ref={wavInputRef}
+        type="file"
+        accept=".wav"
+        onChange={handleBrowserWavSelect}
+        className="hidden"
+      />
+
+      {/* Top FL Studio 21/24 Docked Application Toolbar */}
+      <Toolbar
+        projectTitle={projectTitle}
+        isPlaying={isPlaying}
+        isRecording={isRecording}
+        isFullscreen={isFullscreen}
+        bufferSizeFrames={audioSettings.bufferSizeFrames}
+        mode={mode}
+        bpm={bpm}
+        ppq={ppq}
+        songTick={songTick}
+        masterVolumeDb={masterVolumeDb}
+        masterPitchCents={masterPitchCents}
+        meterL={insertLevels[0]?.[0] ?? 0}
+        meterR={insertLevels[0]?.[1] ?? 0}
+        utilities={utilities}
+        stats={stats}
+        nativeRuntime={engineClient.isNativeRuntime}
+        windowsOpen={{
+          browser: windows.browser?.open ?? true,
+          rack: windows.rack?.open ?? true,
+          mixer: windows.mixer?.open ?? true,
+          pianoroll: windows.pianoroll?.open ?? false,
+          playlist: windows.playlist?.open ?? false,
+        }}
+        canUndo={undoStack.length > 0}
+        canRedo={redoStack.length > 0}
+        onPlayPause={handlePlayPause}
+        onStop={handleStop}
+        onRecord={() => setIsRecording((r) => !r)}
+        onModeChange={setMode}
+        onBpmChange={handleBpmChange}
+        onMasterVolumeChange={handleMasterVolumeChange}
+        onMasterPitchChange={setMasterPitchCents}
+        onUtilityToggle={(k) => setUtilities((u) => ({ ...u, [k]: !u[k] }))}
+        onNewFromTemplate={handleNewFromTemplate}
+        onOpenFlp={handleOpenFlp}
+        onSaveProject={handleSaveOrExportProject}
+        onExportProject={handleSaveOrExportProject}
+        onExportWav={handleExportWav}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        onCutSteps={handleCutSteps}
+        onCopyPattern={handleCopyPattern}
+        onPastePattern={handlePastePattern}
+        onClearPattern={handleClearPattern}
+        onAddGeneratorChannel={handleAddGeneratorChannel}
+        onLoadWavIntoSelected={() => void handleOpenWavDialogForChannel(selectedChannelId)}
+        onNewPattern={handleNewPattern}
+        onClonePattern={handleClonePattern}
+        onSplitByChannel={handleSplitByChannel}
+        onTransposePattern={handleTransposePattern}
+        onFillSelectedChannel={(every) => handleFillChannelSteps(selectedChannelId, every)}
+        onToggleWindow={toggleWindow}
+        onResetLayout={() => setWindows(defaultWindowsLayout())}
+        onToggleFullscreen={() => void handleToggleFullscreen()}
+        onOpenAudioSettings={() => setAudioModalOpen(true)}
+        onOpenAboutModal={() => setAboutModalOpen(true)}
+      />
+
+      {/* Multi-Window Desktop Canvas */}
+      <main className="relative flex-1 min-h-0 overflow-hidden bg-[#171a1f]">
+        {/* Left Window: Browser Tree */}
+        {windows.browser && (
+          <FloatingWindow
+            state={windows.browser}
+            title="BROWSER — PACKS & PCM WAV SAMPLES"
+            icon={<FolderTree size={12} />}
+            onFocus={focusWindow}
+            onChange={updateWindow}
+          >
+            <BrowserSidebar
+              patternNames={patterns.map((p) => p.name)}
+              channelNames={channels.map((c) => c.name)}
+              customWavItems={customWavItems}
+              onLoadWavForSelectedChannel={() =>
+                void handleOpenWavDialogForChannel(selectedChannelId)
+              }
+            />
+          </FloatingWindow>
+        )}
+
+        {/* Center Window: Iconic FL Studio Channel Rack */}
+        {windows.rack && (
+          <FloatingWindow
+            state={windows.rack}
+            title="CHANNEL RACK & STEP SEQUENCER (F6)"
+            icon={<LayoutGrid size={12} />}
+            headerExtras={
+              <ChannelRackHeader
+                patterns={patterns}
+                activePatternId={activePattern.id}
+                stepCount={activePattern.stepCount}
+                onSelectPattern={setActivePatternId}
+                onNewPattern={handleNewPattern}
+                onStepCountChange={handleStepCountChange}
+              />
+            }
+            onFocus={focusWindow}
+            onChange={updateWindow}
+          >
+            <ChannelRack
+              pattern={activePattern}
+              channels={channels}
+              activeStep={activeStep}
+              isPlaying={isPlaying}
+              selectedChannelId={selectedChannelId}
+              onSelectChannel={setSelectedChannelId}
+              onUpdateStep={handleUpdateStep}
+              onUpdateChannel={handleUpdateChannel}
+              onChannelAction={handleChannelAction}
+              onReplaceGenerator={handleReplaceGenerator}
+              onDropWavPath={(chId, p) => void handleLoadWavPathForChannel(chId, p)}
+              onAddChannel={() => handleAddGeneratorChannel("sampler")}
+            />
+          </FloatingWindow>
+        )}
+
+        {/* Piano Roll Window (F7) */}
+        {windows.pianoroll && (
+          <FloatingWindow
+            state={windows.pianoroll}
+            title={`PIANO ROLL (F7) — ${selectedChannel.name.toUpperCase()}`}
+            icon={<Piano size={12} />}
+            onFocus={focusWindow}
+            onChange={updateWindow}
+          >
+            <PianoRollEditor
+              channel={selectedChannel}
+              notes={activePattern.channelData[selectedChannel.id]?.notes ?? []}
+              stepCount={activePattern.stepCount}
+              activeStep={activeStep}
+              isPlaying={isPlaying}
+              ppq={ppq}
+              onToggleNote={handleTogglePianoRollNote}
+            />
+          </FloatingWindow>
+        )}
+
+        {/* Playlist Arrangement Window (F5) */}
+        {windows.playlist && (
+          <FloatingWindow
+            state={windows.playlist}
+            title="PLAYLIST ARRANGEMENT (F5)"
+            icon={<Columns3 size={12} />}
+            onFocus={focusWindow}
+            onChange={updateWindow}
+          >
+            <div className="flex flex-col h-full bg-[#1b1f25] p-2 overflow-auto fl-scroll">
+              <div className="text-[10px] text-fl-dim mb-2">
+                Click cells to toggle pattern clips across 8 bars · Select a pattern row to edit in Channel Rack
+              </div>
+              <div className="inline-flex flex-col gap-1">
+                <div className="flex items-center gap-1 pl-[168px]">
+                  {Array.from({ length: 8 }, (_, b) => (
+                    <div
+                      key={b}
+                      className="w-[78px] text-center text-[10px] font-mono text-fl-amber bg-fl-deep py-0.5 rounded-sm"
+                    >
+                      BAR {b + 1}
+                    </div>
+                  ))}
+                </div>
+                {patterns.map((pat) => {
+                  const row = playlistGrid[pat.id] ?? Array.from({ length: 8 }, () => false);
+                  return (
+                    <div key={pat.id} className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setActivePatternId(pat.id)}
+                        className={`w-[164px] h-7 px-2 text-left text-[11px] truncate rounded-sm border border-black/70 fl-bevel cursor-pointer ${
+                          pat.id === activePattern.id
+                            ? "bg-fl-orange text-black font-bold"
+                            : "bg-fl-raised text-fl-text"
+                        }`}
+                      >
+                        {pat.name}
+                      </button>
+                      {Array.from({ length: 8 }, (_, barIdx) => {
+                        const on = row[barIdx] ?? false;
+                        return (
+                          <button
+                            key={barIdx}
+                            type="button"
+                            onClick={() =>
+                              setPlaylistGrid((prev) => {
+                                const cur = prev[pat.id] ?? Array.from({ length: 8 }, () => false);
+                                const next = [...cur];
+                                next[barIdx] = !on;
+                                return { ...prev, [pat.id]: next };
+                              })
+                            }
+                            className={`w-[78px] h-7 rounded-sm border border-black/70 cursor-pointer transition-colors ${
+                              on
+                                ? "bg-fl-orange/80 border-fl-amber shadow-[inset_0_1px_0_rgba(255,255,255,0.3)]"
+                                : "bg-fl-deep hover:bg-white/5"
+                            }`}
+                          />
+                        );
+                      })}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </FloatingWindow>
+        )}
+
+        {/* Bottom Window: 64-Insert Mixer & 10-Slot FX Rack */}
+        {windows.mixer && (
+          <FloatingWindow
+            state={windows.mixer}
+            title={`MIXER (F9) — MASTER + 64 INSERTS (SELECTED: ${
+              selectedInsert === 0 ? "MASTER" : `INSERT ${selectedInsert}`
+            })`}
+            icon={<SlidersHorizontal size={12} />}
+            onFocus={focusWindow}
+            onChange={updateWindow}
+          >
+            <MixerPanel
+              mixer={mixer}
+              levels={insertLevels}
+              selectedInsert={selectedInsert}
+              insertsInUse={insertsInUse}
+              onSelectInsert={setSelectedInsert}
+              onUpdateInsert={handleUpdateInsert}
+              onSetEffect={handleSetEffect}
+              onToggleBypass={handleToggleBypass}
+            />
+          </FloatingWindow>
+        )}
+
+        {/* Audio Settings Modal (F10) */}
+        {audioModalOpen && (
+          <div
+            className="fixed inset-0 z-[10000] bg-black/70 grid place-items-center"
+            onPointerDown={() => setAudioModalOpen(false)}
+          >
+            <div
+              className="w-[460px] rounded bg-[#232830] border border-black/90 shadow-2xl overflow-hidden"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <div className="h-8 px-3 flex items-center justify-between bg-[#2c323b] border-b border-black/70">
+                <div className="flex items-center gap-2 text-[12px] font-bold text-fl-orange">
+                  <Settings size={14} /> AUDIO SETTINGS — PIPEWIRE / ALSA HARDWARE BUFFER
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAudioModalOpen(false)}
+                  className="w-5 h-5 grid place-items-center rounded hover:bg-red-500/70 cursor-pointer"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+              <div className="p-4 space-y-4 text-[11px] text-fl-text">
+                <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-1.5 font-mono">
+                  <div className="flex justify-between">
+                    <span className="text-fl-dim">OUTPUT DEVICE:</span>
+                    <span className="text-fl-amber truncate max-w-[260px]">
+                      {audioSettings.deviceName}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-fl-dim">SAMPLE RATE:</span>
+                    <span className="text-fl-led">{audioSettings.sampleRate} Hz</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-fl-dim">ACTIVE BUFFER:</span>
+                    <span className="text-white font-bold">
+                      {audioSettings.bufferSizeFrames} frames (
+                      {((audioSettings.bufferSizeFrames / audioSettings.sampleRate) * 1000).toFixed(1)}{" "}
+                      ms)
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-fl-dim">RESAMPLER / SYNTH:</span>
+                    <span className="text-sky-400">
+                      4-Pt Hermite Cubic + PolyBLEP Anti-Aliased
+                    </span>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-fl-dim mb-1.5">
+                    Select Fixed Hardware Buffer Size (cpal::BufferSize::Fixed):
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {[256, 512, 1024, 2048].map((sz) => {
+                      const active = audioSettings.bufferSizeFrames === sz;
+                      const ms = ((sz / audioSettings.sampleRate) * 1000).toFixed(1);
+                      return (
+                        <button
+                          key={sz}
+                          type="button"
+                          onClick={() => void handleChangeBufferSize(sz)}
+                          className={`py-2 px-2 rounded border border-black/70 fl-bevel flex flex-col items-center cursor-pointer ${
+                            active
+                              ? "bg-fl-orange text-black font-bold"
+                              : "bg-fl-raised text-fl-text hover:bg-white/10"
+                          }`}
+                        >
+                          <span className="text-[12px] font-mono">{sz} smp</span>
+                          <span className="text-[9px] opacity-75">{ms} ms</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="flex items-start gap-2 p-2 rounded bg-black/30 text-[10px] text-fl-dim">
+                  <CheckCircle2 size={14} className="text-fl-led shrink-0 mt-0.5" />
+                  <span>
+                    <strong>Zero-Allocation Audio Callback Active:</strong> Lock-free SPSC ring
+                    buffers (<code className="text-fl-amber">rtrb</code>), O(1) sparse mixer routing,
+                    and explicit fixed buffer sizing eliminate PipeWire/ALSA underruns.
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* About Modal */}
+        {aboutModalOpen && (
+          <div
+            className="fixed inset-0 z-[10000] bg-black/70 grid place-items-center"
+            onPointerDown={() => setAboutModalOpen(false)}
+          >
+            <div
+              className="w-[420px] rounded bg-[#232830] border border-black/90 shadow-2xl overflow-hidden"
+              onPointerDown={(e) => e.stopPropagation()}
+            >
+              <div className="h-8 px-3 flex items-center justify-between bg-[#2c323b] border-b border-black/70">
+                <div className="flex items-center gap-2 text-[12px] font-bold text-fl-orange">
+                  <Info size={14} /> ABOUT QL STUDIO 24
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setAboutModalOpen(false)}
+                  className="w-5 h-5 grid place-items-center rounded hover:bg-red-500/70 cursor-pointer"
+                >
+                  <X size={13} />
+                </button>
+              </div>
+              <div className="p-4 space-y-2.5 text-[11px] text-fl-text">
+                <p className="font-semibold text-white">
+                  Ql Studio — Professional Digital Audio Workstation
+                </p>
+                <p className="text-fl-dim leading-relaxed">
+                  Built on Tauri v2 + Rust (<code className="text-fl-amber">cpal</code>,{" "}
+                  <code className="text-fl-amber">rtrb</code>,{" "}
+                  <code className="text-fl-amber">hound</code>) with zero-allocation audio rendering,
+                  4-point Hermite cubic WAV resampling, RBJ Audio EQ Cookbook biquad filters, Kahn
+                  topological DAG mixer verification, and native project import.
+                </p>
+                <div className="flex items-center gap-2 text-[10px] text-fl-led font-mono pt-1">
+                  <Cpu size={12} /> High-Performance Zero-Allocation Engine
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Bottom Hint & Engine Status Bar */}
+      <footer className="h-[22px] shrink-0 bg-[#121418] border-t border-black/80 px-3 flex items-center justify-between text-[10px] font-mono text-fl-dim">
+        <span className="truncate">{statusMessage}</span>
+        <div className="flex items-center gap-3 shrink-0">
+          <span>BUF {audioSettings.bufferSizeFrames} SMP</span>
+          <span>·</span>
+          <span>SWING {(swingRatio * 100).toFixed(0)}%</span>
+          <span>·</span>
+          <span>{ppq} PPQ</span>
+          <span>·</span>
+          <span className="text-fl-led">HERMITE WAV + 64-INSERT DAG</span>
+        </div>
+      </footer>
+    </div>
+  );
+};
+
+/* Interactive Piano Roll Component (F7) */
+const PIANO_NOTES = [
+  { midi: 72, label: "C6", black: false },
+  { midi: 71, label: "B5", black: false },
+  { midi: 70, label: "A#5", black: true },
+  { midi: 69, label: "A5", black: false },
+  { midi: 68, label: "G#5", black: true },
+  { midi: 67, label: "G5", black: false },
+  { midi: 66, label: "F#5", black: true },
+  { midi: 65, label: "F5", black: false },
+  { midi: 64, label: "E5", black: false },
+  { midi: 63, label: "D#5", black: true },
+  { midi: 62, label: "D5", black: false },
+  { midi: 61, label: "C#5", black: true },
+  { midi: 60, label: "C5 (Root)", black: false },
+  { midi: 58, label: "A#4", black: true },
+  { midi: 57, label: "A4", black: false },
+  { midi: 55, label: "G4", black: false },
+  { midi: 53, label: "F4", black: false },
+  { midi: 52, label: "E4", black: false },
+  { midi: 50, label: "D4", black: false },
+  { midi: 48, label: "C4", black: false },
+];
+
+const PianoRollEditor: React.FC<{
+  readonly channel: QlChannel;
+  readonly notes: readonly QlPianoRollNote[];
+  readonly stepCount: number;
+  readonly activeStep: number;
+  readonly isPlaying: boolean;
+  readonly ppq: number;
+  readonly onToggleNote: (stepIdx: number, midiNote: number, isSlide: boolean) => void;
+}> = ({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote }) => {
+  const [slideMode, setSlideMode] = useState(false);
+  const ticksPerStep = ppq / 4;
+
+  return (
+    <div className="flex flex-col h-full bg-[#191d22]">
+      <div className="h-7 px-2 flex items-center gap-3 border-b border-black/70 bg-[#22272e] text-[10px]">
+        <button
+          type="button"
+          onClick={() => setSlideMode((s) => !s)}
+          className={`px-2 py-0.5 rounded font-semibold cursor-pointer fl-bevel ${
+            slideMode ? "bg-fl-orange text-black" : "bg-fl-raised text-fl-dim hover:text-fl-text"
+          }`}
+        >
+          ▲ Slide Note Mode: {slideMode ? "ON" : "OFF"}
+        </button>
+        <span className="text-fl-dim">
+          Click grid cells to place/remove notes · Active notes trigger sample-accurate voices in the Rust engine
+        </span>
+      </div>
+      <div className="flex-1 overflow-auto fl-scroll">
+        <div className="inline-flex flex-col min-w-full">
+          {PIANO_NOTES.map((row) => (
+            <div key={row.midi} className="flex items-center h-[20px] border-b border-black/40">
+              <div
+                className={`w-[74px] h-full px-2 flex items-center justify-between text-[10px] font-mono shrink-0 border-r border-black/80 ${
+                  row.black ? "bg-[#16181c] text-fl-dim" : "bg-[#2a2f37] text-fl-text"
+                }`}
+              >
+                <span>{row.label}</span>
+              </div>
+              <div className="flex items-center">
+                {Array.from({ length: stepCount }, (_, sIdx) => {
+                  const startTick = sIdx * ticksPerStep;
+                  const note = notes.find(
+                    (n) => n.startTick === startTick && n.midiNote === row.midi,
+                  );
+                  const isPlayhead = isPlaying && sIdx === activeStep;
+                  return (
+                    <button
+                      key={sIdx}
+                      type="button"
+                      onClick={() => onToggleNote(sIdx, row.midi, slideMode)}
+                      className={`w-[36px] h-[20px] border-r border-black/40 relative cursor-pointer ${
+                        sIdx % 4 === 0 ? "border-l border-l-white/10" : ""
+                      } ${isPlayhead ? "bg-white/10" : row.black ? "bg-[#1a1e24]" : "bg-[#21262d]"}`}
+                    >
+                      {note && (
+                        <span
+                          className="absolute inset-0.5 rounded-[2px] flex items-center justify-center text-[9px] font-bold text-black"
+                          style={{ background: channel.colorHex }}
+                        >
+                          {note.isSlideNote ? "▲" : ""}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};

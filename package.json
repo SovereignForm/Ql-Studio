@@ -1,0 +1,32 @@
+{
+  "name": "ql-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Ql Studio — High-Performance DAW Engine (React + Tailwind + Canvas + Tauri v2 Rust Core)",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "tauri:dev": "vite build && cargo run --manifest-path src-tauri/Cargo.toml",
+    "desktop": "vite build && cargo run --manifest-path src-tauri/Cargo.toml",
+    "verify": "node src/verifyEngine.ts",
+    "verify:ts": "node src/verifyEngine.ts",
+    "test:rust": "cargo test --lib --manifest-path src-tauri/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "lucide-react": "^1.70.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "tailwindcss": "^4.0.0",
+    "vite": "^6.0.0"
+  }
+}
