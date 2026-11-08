@@ -102,6 +102,7 @@ export interface ToolbarProps {
   readonly onOpenAudioSettings: () => void;
   readonly onOpenAboutModal: () => void;
   readonly onOpenPluginManager?: () => void;
+  readonly onOpenWelcomeHub?: () => void;
   readonly midiConnectedDevice?: string | null;
   readonly midiActivityActive?: boolean;
 }
@@ -208,6 +209,7 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
     { label: string; action?: () => void; hint?: string; divider?: boolean }[]
   > = {
     File: [
+      { label: "Welcome Hub & Template Launcher…", action: p.onOpenWelcomeHub, divider: true },
       { label: "New from Template: Trap 140 BPM (WAV)", action: () => p.onNewFromTemplate("trap_140") },
       { label: "New from Template: Basic 808 Kit", action: () => p.onNewFromTemplate("basic_808") },
       { label: "New from Template: Empty Studio", action: () => p.onNewFromTemplate("empty"), divider: true },
@@ -260,6 +262,7 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
       { label: "Render 2-Bar Mixdown to WAV…", action: p.onExportWav, hint: "Ctrl+E" },
     ],
     Help: [
+      { label: "Welcome Hub & Project Templates…", action: p.onOpenWelcomeHub },
       { label: "About Ql Studio (Zero-Allocation DSP & WAV Engine)", action: p.onOpenAboutModal },
       { label: "Audio Settings & Crackle-Free Buffer Guide", action: p.onOpenAudioSettings, hint: "F10" },
     ],
@@ -312,6 +315,16 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
           </div>
         ))}
         <div className="ml-auto flex items-center gap-2">
+          {p.onOpenWelcomeHub && (
+            <button
+              type="button"
+              onClick={p.onOpenWelcomeHub}
+              title="Open Welcome Screen & Project Templates Hub"
+              className="px-2 h-4.5 rounded bg-fl-deep fl-inset text-[10px] font-mono text-[#00e676] hover:text-white cursor-pointer flex items-center gap-1 border border-black/40"
+            >
+              <Sparkles size={10} className="text-[#00e676]" /> HUB
+            </button>
+          )}
           <button
             type="button"
             onClick={p.onOpenPluginManager}

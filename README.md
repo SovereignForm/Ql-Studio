@@ -77,6 +77,16 @@
 
 ---
 
+### 🚀 Studio Startup Splash Screen & Project Launcher Hub
+* **Branded Startup Experience:** High-resolution vector logo with animated dual-gradient LED progress bar visualizing engine initialization milestones (audio driver allocation, Hermite voice engine, Kahn DAG routing matrix, VST3/CLAP discovery, and USB MIDI synchronization).
+* **Welcome Hub & Template Launcher:**
+  * **Genre Starter Templates:** Trap / Modern Drill (140 BPM), House / Four-on-the-Floor (128 BPM), and Clean Blank Session.
+  * **Direct Project Imports:** Instant one-click open for FruityLoops `.flp` binary files and `.qlproj.json` session snapshots.
+  * **Studio Hardware Health Check:** At-a-glance monitoring of audio interface sample rate, buffer size, and connected hardware MIDI keyboards.
+  * **Configurable Startup Behavior:** Persistent preference to skip directly into the workstation or reopen anytime via the Toolbar `HUB` button.
+
+---
+
 ### 🎚️ 64-Insert Kahn DAG Mixer
 * **Acyclic Routing Graph:** Enforces acyclic signal routing with Kahn's topological sort.
 * **Channel Strip Features:** 3-band RBJ biquad parametric EQ, stereo separation slider (-100% mono to +100% side), polarity inversion, left/right swap, and pre/post fader sends.

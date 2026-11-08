@@ -41,6 +41,12 @@ import {
   DedicatedPluginWindow,
 } from "./components/DedicatedPluginWindow.tsx";
 import {
+  SplashScreen,
+} from "./components/SplashScreen.tsx";
+import {
+  WelcomeHubModal,
+} from "./components/WelcomeHubModal.tsx";
+import {
   Toolbar,
   type PlaybackMode,
   type ProjectTemplateId,
@@ -387,6 +393,18 @@ export const App: React.FC = () => {
   const [audioModalOpen, setAudioModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [pluginModalOpen, setPluginModalOpen] = useState(false);
+  const [showSplash, setShowSplash] = useState<boolean>(true);
+  const [welcomeHubOpen, setWelcomeHubOpen] = useState<boolean>(false);
+
+  const handleSplashFinish = useCallback(() => {
+    setShowSplash(false);
+    if (typeof window !== "undefined") {
+      const skip = localStorage.getItem("ql_studio_skip_welcome") === "true";
+      if (!skip) {
+        setWelcomeHubOpen(true);
+      }
+    }
+  }, []);
   const [availablePlugins, setAvailablePlugins] = useState<readonly PluginDescriptor[]>([]);
   const [loadedPlugins, setLoadedPlugins] = useState<readonly PluginInstanceSummary[]>([]);
 
@@ -1310,6 +1328,24 @@ export const App: React.FC = () => {
     [pushHistory],
   );
 
+  const handleOpenRecentDemo = useCallback(async () => {
+    try {
+      const demoFlp = buildCleanRoomSampleFlp({
+        title: "Ql Studio Demo Session",
+        bpm: 140.0,
+        ppq: 96,
+        channelNames: ["808 Kick (.wav)", "Crisp Clap", "Closed Hat", "Sub Bass"],
+      });
+      const parsed = parseFlpBinary(demoFlp);
+      setProjectTitle(parsed.derivedTitle);
+      setBpm(parsed.derivedBpm);
+      handleNewFromTemplate("trap_140");
+      setStatusMessage("Loaded official Ql Studio demo session!");
+    } catch (err) {
+      console.warn("Failed to load demo:", err);
+    }
+  }, [handleNewFromTemplate]);
+
   const handleCutSteps = useCallback(() => {
     pushHistory();
     setCopiedPatternData(activePattern.channelData);
@@ -1826,6 +1862,7 @@ export const App: React.FC = () => {
         onToggleFullscreen={() => void handleToggleFullscreen()}
         onOpenAudioSettings={() => setAudioModalOpen(true)}
         onOpenAboutModal={() => setAboutModalOpen(true)}
+        onOpenWelcomeHub={() => setWelcomeHubOpen(true)}
       />
 
       {/* Multi-Window Desktop Canvas */}
@@ -2356,6 +2393,18 @@ export const App: React.FC = () => {
           onUnloadPlugin={handleUnloadPlugin}
           onOpenPluginGui={handleOpenPluginGui}
         />
+
+        {/* Project Launcher & Welcome Hub Modal */}
+        <WelcomeHubModal
+          open={welcomeHubOpen}
+          onClose={() => setWelcomeHubOpen(false)}
+          onSelectTemplate={handleNewFromTemplate}
+          onOpenFlp={handleOpenFlp}
+          onOpenRecentDemo={handleOpenRecentDemo}
+          audioSettings={audioSettings}
+          midiStatus={midiStatus}
+          onOpenAudioSettings={() => setAudioModalOpen(true)}
+        />
       </main>
 
       {/* Bottom Hint & Engine Status Bar */}
@@ -2371,6 +2420,9 @@ export const App: React.FC = () => {
           <span className="text-fl-led">HERMITE WAV + 64-INSERT DAG</span>
         </div>
       </footer>
+
+      {/* Startup Engine Splash Screen */}
+      {showSplash && <SplashScreen onFinish={handleSplashFinish} />}
     </div>
   );
 };
