@@ -25,6 +25,7 @@ import {
   Save,
   Settings,
   SlidersHorizontal,
+  Sparkles,
   Square,
   Timer,
 } from "lucide-react";
