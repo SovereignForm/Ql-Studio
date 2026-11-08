@@ -125,7 +125,7 @@ export const WelcomeHubModal: React.FC<WelcomeHubModalProps> = ({
               <span className="font-black text-sm tracking-wider text-white flex items-center gap-2">
                 QL STUDIO · WELCOME HUB & LAUNCHER
                 <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-fl-orange/20 text-fl-orange border border-fl-orange/40">
-                  v0.1.0
+                  v1.0.0
                 </span>
               </span>
               <span className="text-[10px] text-fl-dim">
@@ -392,7 +392,7 @@ export const WelcomeHubModal: React.FC<WelcomeHubModalProps> = ({
               onChange={handleToggleSkip}
               className="accent-fl-orange rounded cursor-pointer"
             />
-            <span>Don&apos;t show this Welcome Hub on startup (Başlangıçta gösterme)</span>
+            <span>Don&apos;t show this Welcome Hub on startup</span>
           </label>
 
           <button

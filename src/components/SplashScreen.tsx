@@ -100,7 +100,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
             QL STUDIO
           </h1>
           <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-fl-orange/20 border border-fl-orange/50 text-fl-orange">
-            v0.1.0
+            v1.0.0
           </span>
         </div>
 

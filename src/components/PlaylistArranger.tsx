@@ -876,7 +876,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
               <div className="flex items-center gap-2">
                 <AudioWaveform size={16} className="text-[#00e676]" />
                 <span className="font-bold text-sm text-fl-text">
-                  Time-Stretch & Pitch Motoru (WSOLA)
+                  WSOLA Time-Stretch & Pitch Shifter
                 </span>
               </div>
               <button
@@ -895,7 +895,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
             {/* Time Stretch Controls */}
             <div className="flex flex-col gap-1.5 bg-[#15171c] p-3 rounded border border-black/40">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-fl-text">Time-Stretch (Tempo/Süre):</span>
+                <span className="font-semibold text-fl-text">Time Stretch (Duration & Speed):</span>
                 <span className="font-mono text-[#00e676] font-bold">
                   {modalStretchRatio.toFixed(2)}x (
                   {Math.round((editingAudioClip.lengthTicks * modalStretchRatio) / ppq)} beats)
@@ -911,7 +911,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                 className="w-full accent-[#00e676] cursor-pointer"
               />
               <div className="flex items-center justify-between text-[9px] text-fl-dim">
-                <span>0.25x (4x Hızlı)</span>
+                <span>0.25x (4x Faster)</span>
                 <div className="flex gap-1">
                   {[0.5, 0.75, 1.0, 1.5, 2.0].map((r) => (
                     <button
@@ -926,16 +926,16 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                     </button>
                   ))}
                 </div>
-                <span>4.0x (4x Yavaş)</span>
+                <span>4.0x (4x Slower)</span>
               </div>
             </div>
 
             {/* Pitch Shift Controls */}
             <div className="flex flex-col gap-1.5 bg-[#15171c] p-3 rounded border border-black/40">
               <div className="flex items-center justify-between text-[11px]">
-                <span className="font-semibold text-fl-text">Pitch-Shift (Perde/Nota):</span>
+                <span className="font-semibold text-fl-text">Pitch Shift (Transposition):</span>
                 <span className="font-mono text-fl-amber font-bold">
-                  {modalPitchSemitones > 0 ? `+${modalPitchSemitones}` : modalPitchSemitones} Yarım Ton (st)
+                  {modalPitchSemitones > 0 ? `+${modalPitchSemitones}` : modalPitchSemitones} Semitones (st)
                 </span>
               </div>
               <input
@@ -948,7 +948,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                 className="w-full accent-fl-amber cursor-pointer"
               />
               <div className="flex items-center justify-between text-[9px] text-fl-dim">
-                <span>-24 (2 Oktav Pes)</span>
+                <span>-24 (-2 Octaves)</span>
                 <div className="flex gap-1">
                   {[-12, -7, 0, 7, 12].map((st) => (
                     <button
@@ -963,7 +963,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                     </button>
                   ))}
                 </div>
-                <span>+24 (2 Oktav Tiz)</span>
+                <span>+24 (+2 Octaves)</span>
               </div>
             </div>
 
@@ -979,7 +979,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                 onClick={() => setEditingAudioClip(null)}
                 className="px-3 py-1.5 rounded bg-fl-deep hover:bg-white/10 text-[11px] text-fl-text cursor-pointer"
               >
-                İptal
+                Cancel
               </button>
               <button
                 type="button"
@@ -1021,7 +1021,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                 className="px-3 py-1.5 rounded bg-[#00e676] hover:bg-[#00c853] text-black font-bold text-[11px] flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
               >
                 <Check size={13} />
-                {applyingStretch ? "İşleniyor..." : "Uygula (WSOLA Stretch)"}
+                {applyingStretch ? "Processing..." : "Apply WSOLA Stretch"}
               </button>
             </div>
           </div>
