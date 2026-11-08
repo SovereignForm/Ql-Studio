@@ -5,8 +5,8 @@
 <h1 align="center">Ql Studio</h1>
 
 <p align="center">
-  <b>High-Performance Digital Audio Workstation (DAW) & Desktop Music Production Suite</b><br>
-  Built with React 19, Tailwind CSS v4, HTML5 Canvas, and Tauri v2 (Rust Core).
+  <b>High-Performance Next-Generation Digital Audio Workstation (DAW) & Desktop Music Production Suite</b><br>
+  Engineered with React 19, Tailwind CSS v4, HTML5 Canvas, and Tauri v2 (Rust Real-Time Audio Core).
 </p>
 
 <p align="center">
@@ -17,6 +17,8 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Audio%20Core-Rust%20(cpal%20%2B%20rtrb)-orange?style=flat-square" alt="Rust Audio" />
+  <img src="https://img.shields.io/badge/Plugin%20Host-VST3%20%2B%20CLAP-red?style=flat-square" alt="VST3 CLAP" />
+  <img src="https://img.shields.io/badge/Hardware-USB%20MIDI%20(midir)-yellow?style=flat-square" alt="Hardware MIDI" />
   <img src="https://img.shields.io/badge/WAV%20Sampler-hound%20%2B%20Hermite%204--pt-green?style=flat-square" alt="Hound WAV" />
   <img src="https://img.shields.io/badge/GUI-Tauri%20v2%20%2B%20React%2019-blue?style=flat-square" alt="Tauri v2" />
   <img src="https://img.shields.io/badge/Platforms-Linux%20%7C%20Windows%20%7C%20macOS-purple?style=flat-square" alt="Platforms" />
@@ -24,18 +26,58 @@
 
 ---
 
-## ⚡ Features at a Glance
+## ⚡ Key Highlights & Capabilities
 
-- **⚡ Zero-Allocation Audio Engine (Rust):** Real-time DSP callback running on a dedicated thread with wait-free SPSC lock-free ring buffers (`rtrb`) and explicit fixed hardware buffer sizes (`256 / 512 / 1024 / 2048` frames). No audio crackle under PipeWire, ALSA, CoreAudio, or WASAPI.
-- **🥁 Native PCM WAV Sampler (`hound`):** 4-point Hermite cubic interpolation resampling with bundled starter studio drum kit (`808 Kick`, `Studio Clap`, `Closed Hi-Hat`, `808 Snare`). Drag-and-drop `.wav` files directly into channel rows.
-- **🎛️ 64-Insert Kahn DAG Mixer:** Verified acyclic routing graph with RBJ biquad parametric filters, stereo separation, polarity invert, and non-linear soft limiter ($\tanh$).
-- **🎹 Pattern-Based Studio Workflow:**
-  - Multi-window workspace (Channel Rack, Piano Roll `F7`, Playlist Arrangement `F5`, Browser `Alt+F8`, 64-Insert Mixer `F9`).
-  - True borderless fullscreen workstation mode (`F11`).
-  - Graph editor drawer (Velocity, Pan, Pitch micro-adjustments).
-  - Undo/Redo history stack (`Ctrl+Z`, `Ctrl+Y`).
-  - Native `.flp` binary project format import support.
-  - Export pattern mixdown directly as 16-bit PCM WAV (`Ctrl+E`).
+### 🔌 VST3 & CLAP Third-Party Plugin Hosting
+* **Cross-Format Plugin Host (`vst3-host` & `clack-host`):** Scan standard system paths (`/usr/lib/vst3`, `~/.vst3`, `/Library/Audio/Plug-Ins/VST3`, `C:\Program Files\Common Files\VST3`) and host external third-party VST3 / CLAP synthesizers and effects.
+* **Studio Built-in FX Suite:**
+  * **Vintage Tape Saturator:** Analogue harmonic saturation with warm drive, tape compression, and high-frequency roll-off.
+  * **Mastering Precision Limiter:** Brickwall true-peak limiter with fast attack, program-dependent release, and zero-distortion ceiling.
+  * **303 Acid Bassline Synth:** Resonant analogue low-pass filter with envelope modulation.
+  * **Stereo Field Imager:** Mid/side stereo widening with phase correlation monitoring.
+* **Zero-Allocation Audio Thread Slots:** 10 insert slots per mixer channel processed lock-free in real time.
+
+---
+
+### 🎙️ Live Vocal & Instrument Recording (Direct Monitoring)
+* **Hardware Input Bus (`cpal`):** Direct capture from physical audio interfaces, USB microphones, and line-in devices.
+* **Zero-Latency Direct FX Monitoring:** Live microphone audio is routed over a lock-free SPSC ring buffer straight into **Mixer Insert 1**, allowing the vocalist to hear their voice live with Reverb, Delay, and Parametric EQ without audible latency.
+* **Timeline Clip Placement:** Captured audio is encoded into broadcast **16-bit / 48kHz Stereo WAV** (`samples/recorded_vocal_*.wav`) and automatically placed as a green audio waveform clip onto the Playlist Arranger at the exact recording tick.
+
+---
+
+### 🎛️ Physical Hardware MIDI Controller Integration
+* **Plug-and-Play USB MIDI Engine (`midir`):** Automatically enumerates physical keyboards, synthesizers, and pad controllers.
+* **Factory Controller Profiles:**
+  * **Generic USB MIDI:** Note On/Off, dynamic velocity sensitivity, Pitch Bend, CC 7 (Volume), CC 10 (Pan).
+  * **Akai Fire:** 4 endless rotary encoders mapped to volume, pan, low-pass filter cutoff, and resonance, plus pad matrix notes.
+  * **Novation Launchkey:** InControl faders 1..8 mapped directly to Mixer Inserts 1..8 fader levels.
+* **Sub-Millisecond Event Response:** Lock-free bypass routes hardware MIDI events straight to `RealTimeAudioEngine` without OS thread delay.
+* **Live MIDI Activity LED:** Real-time toolbar indicator blinks amber on keypress and displays the active note (`MIDI IN: #60 C5`).
+
+---
+
+### 📜 Unlimited Multi-Track Playlist Arrangement
+* **Infinite Arrangement Canvas:** Unlimited horizontal/vertical multi-track lanes (Tracks 1..32+) with individual track mute, solo, and custom color striping.
+* **Pattern, Audio & Automation Clips:**
+  * **Pattern Clips:** Note and step previews directly on the timeline.
+  * **Audio Clips:** Waveform visualization with interactive edge resizing.
+  * **Automation Clips:** Full Bezier curve automation with draggable tension control points for volume, pan, and filter sweeps.
+* **Arrangement Tools:** Select (`S`), Pencil (`P`), Slice / Cut (`C`), Delete (`D`), and flexible snap-to-grid (Bar, Beat, 1/2 Step, 1/4 Step, None).
+
+---
+
+### 🎚️ 64-Insert Kahn DAG Mixer
+* **Acyclic Routing Graph:** Enforces acyclic signal routing with Kahn's topological sort.
+* **Channel Strip Features:** 3-band RBJ biquad parametric EQ, stereo separation slider (-100% mono to +100% side), polarity inversion, left/right swap, and pre/post fader sends.
+* **High-Cadence Peak Meters:** Stereo peak level tracking with logarithmic decay and clip indicators.
+
+---
+
+### ⚡ Zero-Allocation Audio Engine (Rust Core)
+* Hard real-time audio thread executing exclusively with stack-allocated buffers and lock-free SPSC ring buffers (`rtrb`).
+* Dedicated 4ms non-RT lookahead scheduling thread resolves patterns, slides, and swing without blocking the audio driver.
+* Hardware buffer size options: `256`, `512`, `1024`, and `2048` frames (`cpal::BufferSize::Fixed`) for crackle-free stability on PipeWire, ALSA, CoreAudio, and WASAPI.
 
 ---
 
@@ -49,9 +91,9 @@
 | **`F7`** | Toggle Piano Roll Editor |
 | **`Alt + F8`** | Toggle Sample & Preset Browser |
 | **`F9`** | Toggle 64-Insert Mixer |
-| **`F10`** | Open Audio Settings (Buffer Size / Device selector) |
+| **`F10`** | Open Audio, Vocal & Hardware MIDI Settings Modal |
 | **`F11`** | Toggle Borderless Fullscreen Workstation |
-| **`Ctrl + E`** | Export Pattern Mixdown as WAV |
+| **`Ctrl + E`** | Export Pattern / Song Mixdown as WAV |
 | **`Ctrl + S`** | Save Project State (`.qlproj.json`) |
 | **`Ctrl + Z` / `Ctrl + Y`** | Undo / Redo |
 
@@ -62,7 +104,7 @@
 ### Prerequisites
 - Node.js >= 20
 - Rust stable (`rustup default stable`)
-- Linux only: `sudo apt install libwebkit2gtk-4.1-dev libasound2-dev libpipewire-0.3-dev librsvg2-dev`
+- **Linux:** `sudo apt install libwebkit2gtk-4.1-dev libasound2-dev libpipewire-0.3-dev librsvg2-dev`
 
 ### Development
 ```bash
@@ -70,30 +112,38 @@
 git clone https://github.com/SovereignForm/Ql-Studio.git
 cd Ql-Studio
 
-# Install dependencies
+# Install frontend dependencies
 npm install
 
-# Run the Desktop DAW
+# Run Desktop DAW in developer mode
 npm run tauri:dev
 ```
 
 ### Unit Tests
 ```bash
-# Run real-time DSP, DAG mixer, and WAV sampler tests
-npm run test:rust
+# Run Rust unit tests (DSP, VST3/CLAP hosting, MIDI, audio recording, WAV sampler)
+cd src-tauri
+cargo test
+```
+
+### Production Build
+```bash
+# Build frontend and optimized release binary
+npm run build
+cargo build --release --manifest-path src-tauri/Cargo.toml
 ```
 
 ---
 
 ## 📦 Multi-Platform Downloads
 
-Pre-built binaries are generated automatically via GitHub Actions:
+Pre-built binaries are generated automatically on release:
 
-- 🐧 **Linux:** `.deb` (Debian, Ubuntu, Mint)
+- 🐧 **Linux:** `.deb` (Debian, Ubuntu, Mint, Pop!_OS)
 - 🪟 **Windows:** `.exe` (NSIS Installer) & `.msi`
-- 🍏 **macOS:** `.dmg` (Universal: Apple Silicon M1/M2/M3/M4 & Intel x86_64)
+- 🍏 **macOS:** `.dmg` (Universal binary: Apple Silicon M1/M2/M3/M4 & Intel x86_64)
 
-👉 Visit the [Releases Page](https://github.com/SovereignForm/Ql-Studio/releases) to download the latest build.
+👉 Visit the [Releases Page](https://github.com/SovereignForm/Ql-Studio/releases) to download the latest desktop packages.
 
 ---
 
