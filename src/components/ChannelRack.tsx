@@ -107,7 +107,7 @@ export interface ChannelRackProps {
 
 const STEP_W = 22;
 
-export const ChannelRack: React.FC<ChannelRackProps> = ({
+export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
   pattern,
   channels,
   activeStep,
@@ -384,7 +384,8 @@ export const ChannelRack: React.FC<ChannelRackProps> = ({
       )}
     </div>
   );
-};
+});
+ChannelRack.displayName = "ChannelRack";
 
 /* Mixer target LCD: vertical drag or wheel, "---" = master. */
 const MixerTargetLcd: React.FC<{ readonly value: number; readonly onChange: (v: number) => void }> = ({ value, onChange }) => {

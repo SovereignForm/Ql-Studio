@@ -205,7 +205,7 @@ export interface BrowserSidebarProps {
   readonly onAuditionItem?: (item: BrowserItem) => void;
 }
 
-export const BrowserSidebar: React.FC<BrowserSidebarProps> = ({
+export const BrowserSidebar: React.FC<BrowserSidebarProps> = React.memo(({
   patternNames,
   channelNames,
   customWavItems = [],
@@ -340,7 +340,8 @@ export const BrowserSidebar: React.FC<BrowserSidebarProps> = ({
       <WaveformPreview item={selected} />
     </div>
   );
-};
+});
+BrowserSidebar.displayName = "BrowserSidebar";
 
 /** Draws waveform preview of the selected sample or oscillator shape. */
 const WaveformPreview: React.FC<{ readonly item: BrowserItem | null }> = ({ item: it }) => {

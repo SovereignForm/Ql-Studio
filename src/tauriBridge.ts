@@ -10,12 +10,21 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
+  AudioInputDeviceInfo,
   BiquadFilterMode,
+  MidiControllerProfile,
+  MidiDeviceInfo,
+  MidiStatusSnapshot,
   ParametricEqBand,
+  PlayMode,
+  PluginDescriptor,
+  PluginInstanceSummary,
   QlChannel,
   QlMixerSend,
   QlMixerState,
   QlPattern,
+  QlPlaylistState,
+  RecordedAudioSummary,
   WaveformShape,
 } from "./schemas.ts";
 
@@ -28,6 +37,8 @@ export interface NativeEngineStatusSnapshot {
   readonly bufferSizeFrames: number;
   readonly nextUnscheduledTick: number;
   readonly audioStreamActive: boolean;
+  readonly playMode?: PlayMode;
+  readonly songTick?: number;
 }
 
 export interface AudioSettingsSnapshot {
@@ -453,6 +464,101 @@ export class QlNativeEngineClient {
     return invoke<NativeEngineStatusSnapshot>("get_engine_status");
   }
 
+  public async setPlayMode(mode: PlayMode): Promise<NativeEngineStatusSnapshot> {
+    if (!this.isNativeRuntime) {
+      this.fallbackStatus = { ...this.fallbackStatus, playMode: mode };
+      return this.fallbackStatus;
+    }
+    return invoke<NativeEngineStatusSnapshot>("set_play_mode", { mode });
+  }
+
+  public async updateArrangement(
+    playlist: QlPlaylistState,
+    patterns: readonly QlPattern[],
+  ): Promise<NativeEngineStatusSnapshot> {
+    if (!this.isNativeRuntime) {
+      return this.fallbackStatus;
+    }
+    return invoke<NativeEngineStatusSnapshot>("update_arrangement", {
+      playlist,
+      patterns,
+    });
+  }
+
+  public async scanPlugins(customPaths: string[] = []): Promise<PluginDescriptor[]> {
+    if (!this.isNativeRuntime) {
+      return [];
+    }
+    return invoke<PluginDescriptor[]>("scan_plugins", { customPaths });
+  }
+
+  public async getAvailablePlugins(): Promise<PluginDescriptor[]> {
+    if (!this.isNativeRuntime) {
+      return [];
+    }
+    return invoke<PluginDescriptor[]>("get_available_plugins");
+  }
+
+  public async loadPlugin(
+    pluginId: string,
+    targetKind: "mixer_slot" | "channel",
+    targetIndex: number,
+    slotIndex?: number,
+  ): Promise<PluginInstanceSummary> {
+    if (!this.isNativeRuntime) {
+      return {
+        instanceId: `mock_${Date.now()}`,
+        descriptor: {
+          id: pluginId,
+          path: "",
+          name: pluginId,
+          vendor: "Studio",
+          version: "1.0",
+          format: "vst3",
+          category: "effect",
+          audioInputs: 2,
+          audioOutputs: 2,
+          hasEditor: true,
+          parameters: [],
+        },
+        targetKind,
+        targetIndex,
+        slotIndex,
+        parameters: [],
+        active: true,
+      };
+    }
+    return invoke<PluginInstanceSummary>("load_plugin", {
+      pluginId,
+      targetKind,
+      targetIndex,
+      slotIndex,
+    });
+  }
+
+  public async setPluginParameter(
+    instanceId: string,
+    paramId: number,
+    value: number,
+  ): Promise<void> {
+    if (!this.isNativeRuntime) return;
+    return invoke<void>("set_plugin_parameter", {
+      instanceId,
+      paramId,
+      value,
+    });
+  }
+
+  public async unloadPlugin(instanceId: string): Promise<void> {
+    if (!this.isNativeRuntime) return;
+    return invoke<void>("unload_plugin", { instanceId });
+  }
+
+  public async getLoadedPlugins(): Promise<PluginInstanceSummary[]> {
+    if (!this.isNativeRuntime) return [];
+    return invoke<PluginInstanceSummary[]>("get_loaded_plugins");
+  }
+
   public async getAudioSettings(): Promise<AudioSettingsSnapshot> {
     if (!this.isNativeRuntime) {
       return this.fallbackAudioSettings;
@@ -618,5 +724,73 @@ export class QlNativeEngineClient {
     if (this.isNativeRuntime) {
       await getCurrentWindow().close();
     }
+  }
+
+  // --- Live Audio Recording & Vocal Capture ---
+
+  public async getAudioInputDevices(): Promise<readonly AudioInputDeviceInfo[]> {
+    if (!this.isNativeRuntime) {
+      return [{ name: "Default System Microphone (Web Audio)", isDefault: true }];
+    }
+    return invoke<AudioInputDeviceInfo[]>("get_audio_input_devices");
+  }
+
+  public async startRecording(startTick: number, trackIndex: number): Promise<void> {
+    if (!this.isNativeRuntime) {
+      return;
+    }
+    await invoke("start_recording", { startTick, trackIndex });
+  }
+
+  public async stopRecording(): Promise<RecordedAudioSummary | null> {
+    if (!this.isNativeRuntime) {
+      return null;
+    }
+    return invoke<RecordedAudioSummary | null>("stop_recording");
+  }
+
+  public async setLiveMonitoring(enabled: boolean): Promise<void> {
+    if (!this.isNativeRuntime) {
+      return;
+    }
+    await invoke("set_live_monitoring", { enabled });
+  }
+
+  // --- Hardware Physical MIDI Controllers ---
+
+  public async getMidiInputDevices(): Promise<readonly MidiDeviceInfo[]> {
+    if (!this.isNativeRuntime) {
+      return [];
+    }
+    return invoke<MidiDeviceInfo[]>("get_midi_input_devices");
+  }
+
+  public async connectMidiDevice(
+    portIndex: number,
+    profile: MidiControllerProfile,
+  ): Promise<string> {
+    if (!this.isNativeRuntime) {
+      return "Web Emulated MIDI Port";
+    }
+    return invoke<string>("connect_midi_device", { portIndex, profile });
+  }
+
+  public async disconnectMidiDevice(): Promise<void> {
+    if (!this.isNativeRuntime) {
+      return;
+    }
+    await invoke("disconnect_midi_device");
+  }
+
+  public async getMidiStatus(): Promise<MidiStatusSnapshot> {
+    if (!this.isNativeRuntime) {
+      return {
+        connectedDevice: null,
+        activeProfile: "generic",
+        lastActivityTimestampMs: 0,
+        lastNotePlayed: null,
+      };
+    }
+    return invoke<MidiStatusSnapshot>("get_midi_status");
   }
 }

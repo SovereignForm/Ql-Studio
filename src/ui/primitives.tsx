@@ -20,7 +20,7 @@ export interface KnobProps {
   readonly onChange: (v: number) => void;
 }
 
-export const Knob: React.FC<KnobProps> = ({
+export const Knob: React.FC<KnobProps> = React.memo(({
   value,
   min,
   max,
@@ -114,7 +114,8 @@ export const Knob: React.FC<KnobProps> = ({
       }}
     />
   );
-};
+});
+Knob.displayName = "Knob";
 
 /* ------------------------------------------------------------------ */
 /* Stereo peak meter (canvas). Levels are linear 0..1 per side.         */
@@ -127,7 +128,7 @@ export interface PeakMeterProps {
   readonly orientation?: "vertical" | "horizontal";
 }
 
-export const PeakMeter: React.FC<PeakMeterProps> = ({
+export const PeakMeter: React.FC<PeakMeterProps> = React.memo(({
   left,
   right,
   width,
@@ -170,7 +171,8 @@ export const PeakMeter: React.FC<PeakMeterProps> = ({
     }
   }, [left, right, width, height, orientation]);
   return <canvas ref={ref} className="rounded-[2px] fl-inset" style={{ width, height }} />;
-};
+});
+PeakMeter.displayName = "PeakMeter";
 
 /* ------------------------------------------------------------------ */
 /* LED toggle                                                           */

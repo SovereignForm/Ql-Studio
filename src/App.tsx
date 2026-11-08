@@ -5,9 +5,13 @@ import {
   FolderTree,
   Info,
   LayoutGrid,
+  Mic,
+  Music,
   Piano,
+  Radio,
   Settings,
   SlidersHorizontal,
+  Volume2,
   X,
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -28,6 +32,12 @@ import {
   type InsertPatch,
 } from "./components/MixerPanel.tsx";
 import {
+  PlaylistArranger,
+} from "./components/PlaylistArranger.tsx";
+import {
+  PluginManagerModal,
+} from "./components/PluginManagerModal.tsx";
+import {
   Toolbar,
   type PlaybackMode,
   type ProjectTemplateId,
@@ -37,14 +47,24 @@ import {
 import { buildCleanRoomSampleFlp, parseFlpBinary } from "./flpParser.ts";
 import { createDefaultMixerState } from "./mixer.ts";
 import type {
+  AudioInputDeviceInfo,
   InsertEffectConfig,
+  MidiControllerProfile,
+  MidiDeviceInfo,
+  MidiStatusSnapshot,
+  PluginDescriptor,
+  PluginInstanceSummary,
   PpqResolution,
   QlChannel,
   QlChannelPatternData,
   QlMixerState,
   QlPattern,
   QlPianoRollNote,
+  QlPlaylistClip,
+  QlPlaylistState,
+  QlPlaylistTrack,
   QlStep,
+  RecordedAudioSummary,
 } from "./schemas.ts";
 import {
   fromNativeChannelPayload,
@@ -349,12 +369,150 @@ export const App: React.FC = () => {
   });
   const [audioModalOpen, setAudioModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
+  const [pluginModalOpen, setPluginModalOpen] = useState(false);
+  const [availablePlugins, setAvailablePlugins] = useState<readonly PluginDescriptor[]>([]);
+  const [loadedPlugins, setLoadedPlugins] = useState<readonly PluginInstanceSummary[]>([]);
 
-  // Playlist arrangement state: patternId -> 8 bar toggles
-  const [playlistGrid, setPlaylistGrid] = useState<Record<string, boolean[]>>({
-    pat_1: [true, true, true, false, true, true, false, false],
-    pat_2: [false, false, false, true, false, false, true, true],
+  // Audio Input & Hardware MIDI States
+  const [audioSettingsTab, setAudioSettingsTab] = useState<"output" | "input" | "midi">("output");
+  const [audioInputDevices, setAudioInputDevices] = useState<readonly AudioInputDeviceInfo[]>([]);
+  const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
+  const [liveMonitoring, setLiveMonitoring] = useState<boolean>(true);
+  const [midiDevices, setMidiDevices] = useState<readonly MidiDeviceInfo[]>([]);
+  const [selectedMidiPortIdx, setSelectedMidiPortIdx] = useState<number>(0);
+  const [selectedMidiProfile, setSelectedMidiProfile] = useState<MidiControllerProfile>("generic");
+  const [midiStatus, setMidiStatus] = useState<MidiStatusSnapshot>({
+    connectedDevice: null,
+    activeProfile: "generic",
+    lastActivityTimestampMs: 0,
+    lastNotePlayed: null,
   });
+
+  // Poll Hardware MIDI & Audio Input status
+  useEffect(() => {
+    let active = true;
+    const interval = setInterval(async () => {
+      if (!engineClient.isNativeRuntime) return;
+      try {
+        const status = await engineClient.getMidiStatus();
+        if (active) {
+          setMidiStatus(status);
+        }
+      } catch {}
+    }, 250);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [engineClient]);
+
+  // Load input devices and MIDI ports when opening audio modal
+  useEffect(() => {
+    if (!audioModalOpen) return;
+    const loadHardware = async () => {
+      try {
+        const inDevs = await engineClient.getAudioInputDevices();
+        setAudioInputDevices(inDevs);
+        if (inDevs.length > 0 && !selectedInputDevice) {
+          const def = inDevs.find((d) => d.isDefault) || inDevs[0];
+          setSelectedInputDevice(def.name);
+        }
+        const midiDevs = await engineClient.getMidiInputDevices();
+        setMidiDevices(midiDevs);
+      } catch (err) {
+        console.warn("Failed to enumerate hardware audio/midi devices", err);
+      }
+    };
+    void loadHardware();
+  }, [audioModalOpen, engineClient, selectedInputDevice]);
+
+  const isMidiActive = useMemo(() => {
+    if (!midiStatus.lastActivityTimestampMs) return false;
+    return Date.now() - midiStatus.lastActivityTimestampMs < 400;
+  }, [midiStatus.lastActivityTimestampMs]);
+
+  const handleConnectMidi = useCallback(async () => {
+    try {
+      await engineClient.connectMidiDevice(selectedMidiPortIdx, selectedMidiProfile);
+      const st = await engineClient.getMidiStatus();
+      setMidiStatus(st);
+      const devs = await engineClient.getMidiInputDevices();
+      setMidiDevices(devs);
+    } catch (err) {
+      console.error("Failed to connect MIDI device:", err);
+    }
+  }, [engineClient, selectedMidiPortIdx, selectedMidiProfile]);
+
+  const handleDisconnectMidi = useCallback(async () => {
+    try {
+      await engineClient.disconnectMidiDevice();
+      const st = await engineClient.getMidiStatus();
+      setMidiStatus(st);
+      const devs = await engineClient.getMidiInputDevices();
+      setMidiDevices(devs);
+    } catch (err) {
+      console.error("Failed to disconnect MIDI device:", err);
+    }
+  }, [engineClient]);
+
+  const handleToggleMonitoring = useCallback(
+    async (enabled: boolean) => {
+      setLiveMonitoring(enabled);
+      await engineClient.setLiveMonitoring(enabled).catch(() => {});
+    },
+    [engineClient],
+  );
+
+  // Unlimited Multi-Track Playlist Arrangement State
+  const [playlist, setPlaylist] = useState<QlPlaylistState>(() => ({
+    tracks: Array.from({ length: 24 }, (_, i) => ({
+      index: i,
+      name: `Track ${i + 1}`,
+      colorHex: (["#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#06b6d4"][i % 6] ?? "#3b82f6") as `#${string}`,
+      heightPx: 46,
+      muted: false,
+      solo: false,
+    })),
+    clips: [
+      {
+        id: "clip_starter_1",
+        trackIndex: 0,
+        startTick: 0,
+        lengthTicks: 384,
+        offsetTicks: 0,
+        kind: "pattern",
+        referenceId: "pat_1",
+        name: "Pattern 1",
+        colorHex: "#ff8500",
+      },
+      {
+        id: "clip_starter_2",
+        trackIndex: 0,
+        startTick: 384,
+        lengthTicks: 384,
+        offsetTicks: 0,
+        kind: "pattern",
+        referenceId: "pat_1",
+        name: "Pattern 1",
+        colorHex: "#ff8500",
+      },
+      {
+        id: "clip_starter_3",
+        trackIndex: 1,
+        startTick: 768,
+        lengthTicks: 384,
+        offsetTicks: 0,
+        kind: "pattern",
+        referenceId: "pat_2",
+        name: "Pattern 2",
+        colorHex: "#38bdf8",
+      },
+    ],
+    automationClips: [],
+    loopStartTick: 0,
+    loopEndTick: 1536,
+    playMode: "pattern",
+  }));
 
   const [statusMessage, setStatusMessage] = useState(
     "Ready · Crackle-Free Fixed Buffer (1024 smp) · F6 Rack · F7 Piano Roll · F9 Mixer · F11 Fullscreen",
@@ -446,6 +604,67 @@ export const App: React.FC = () => {
     void engineClient.updateMixerGraph(mixer).catch(() => {});
   }, [engineClient, mixer]);
 
+  // Sync playlist arrangement & patterns to native lookahead scheduler
+  useEffect(() => {
+    void engineClient.updateArrangement(playlist, patterns).catch(() => {});
+  }, [engineClient, playlist, patterns]);
+
+  // Initial fetch of available and loaded plugins
+  useEffect(() => {
+    void engineClient.getAvailablePlugins().then((list) => {
+      setAvailablePlugins(list);
+    }).catch(() => {});
+    void engineClient.getLoadedPlugins().then((list) => {
+      setLoadedPlugins(list);
+    }).catch(() => {});
+  }, [engineClient]);
+
+  const handleScanPlugins = useCallback(async (customPaths?: string[]) => {
+    const list = await engineClient.scanPlugins(customPaths);
+    setAvailablePlugins(list);
+    setStatusMessage(`Discovered ${list.length} VST3 / CLAP plugins on system!`);
+  }, [engineClient]);
+
+  const handleLoadPlugin = useCallback(async (
+    pluginId: string,
+    targetKind: "mixer_slot" | "channel",
+    targetIndex: number,
+    slotIndex?: number,
+  ) => {
+    const summary = await engineClient.loadPlugin(pluginId, targetKind, targetIndex, slotIndex);
+    setLoadedPlugins((prev) => [...prev.filter((p) => p.instanceId !== summary.instanceId), summary]);
+    setStatusMessage(`Loaded plugin '${summary.descriptor.name}' (${summary.descriptor.format.toUpperCase()})!`);
+  }, [engineClient]);
+
+  const handleSetPluginParameter = useCallback(async (
+    instanceId: string,
+    paramId: number,
+    value: number,
+  ) => {
+    await engineClient.setPluginParameter(instanceId, paramId, value);
+    setLoadedPlugins((prev) =>
+      prev.map((inst) =>
+        inst.instanceId === instanceId
+          ? {
+              ...inst,
+              parameters: inst.parameters.map((p) => (p.id === paramId ? { ...p, value } : p)),
+            }
+          : inst,
+      ),
+    );
+  }, [engineClient]);
+
+  const handleUnloadPlugin = useCallback(async (instanceId: string) => {
+    await engineClient.unloadPlugin(instanceId);
+    setLoadedPlugins((prev) => prev.filter((p) => p.instanceId !== instanceId));
+    setStatusMessage(`Unloaded plugin instance`);
+  }, [engineClient]);
+
+  const handleModeChange = useCallback(async (nextMode: PlaybackMode) => {
+    setMode(nextMode);
+    await engineClient.setPlayMode(nextMode).catch(() => {});
+  }, [engineClient]);
+
   const focusWindow = useCallback((id: string) => {
     setWindows((prev) => {
       const maxZ = Math.max(...Object.values(prev).map((w) => w.z));
@@ -534,6 +753,8 @@ export const App: React.FC = () => {
     let rafId = 0;
     const startMs = performance.now();
     let prevStep = -1;
+    let prevTick = -1;
+    let lastUiThrottle = 0;
     const decayLevels = Array.from({ length: 65 }, () => [0, 0] as [number, number]);
 
     let maxDecay = 0;
@@ -555,13 +776,15 @@ export const App: React.FC = () => {
         const stepIdx =
           Math.floor(currentTick / ticksPerStep) % activePattern.stepCount;
 
-        setSongTick(currentTick);
-        setActiveStep(stepIdx);
-
-        const anySolo = channels.some((c) => c.solo);
+        if (currentTick !== prevTick) {
+          prevTick = currentTick;
+          setSongTick(currentTick);
+        }
         if (stepIdx !== prevStep) {
           prevStep = stepIdx;
+          setActiveStep(stepIdx);
           for (const ch of channels) {
+            const anySolo = channels.some((c) => c.solo);
             const audible = anySolo ? ch.solo : !ch.muted;
             if (!audible) continue;
             const st = activePattern.channelData[ch.id]?.steps[stepIdx];
@@ -598,44 +821,96 @@ export const App: React.FC = () => {
         }
       }
 
+      // Throttle meter updates to 30 FPS instead of 60/144 FPS to prevent UI thread lock
+      if (nowMs - lastUiThrottle > 32) {
+        lastUiThrottle = nowMs;
+        if (isPlaying || maxDecay > 0.002) {
+          setInsertLevels(decayLevels.map(([l, r]) => [l, r] as const));
+          setStats((prev) => ({
+            ...prev,
+            uiLoadPercent: isPlaying ? 5 + activeVoices * 2 : 2,
+            polyphony: isPlaying ? Math.max(activeVoices, decayLevels[0]![0] > 0.15 ? 2 : 0) : 0,
+          }));
+        } else {
+          setInsertLevels(decayLevels.map(() => [0, 0] as const));
+          setStats((prev) => ({
+            ...prev,
+            uiLoadPercent: 1,
+            polyphony: 0,
+          }));
+        }
+      }
+
       if (isPlaying || maxDecay > 0.002) {
-        setInsertLevels(decayLevels.map(([l, r]) => [l, r] as const));
-        setStats((prev) => ({
-          ...prev,
-          uiLoadPercent: isPlaying ? 5 + activeVoices * 2 : 2,
-          polyphony: isPlaying ? Math.max(activeVoices, decayLevels[0]![0] > 0.15 ? 2 : 0) : 0,
-        }));
         rafId = requestAnimationFrame(tickLoop);
-      } else {
-        setInsertLevels(decayLevels.map(() => [0, 0] as const));
-        setStats((prev) => ({
-          ...prev,
-          uiLoadPercent: 1,
-          polyphony: 0,
-        }));
       }
     };
 
-    rafId = requestAnimationFrame(tickLoop);
-    return () => cancelAnimationFrame(rafId);
+    if (isPlaying) {
+      rafId = requestAnimationFrame(tickLoop);
+    }
+    return () => {
+      if (rafId) cancelAnimationFrame(rafId);
+    };
   }, [isPlaying, bpm, ppq, activePattern, channels, mixer.inserts]);
 
   const handlePlayPause = useCallback(async () => {
     if (isPlaying) {
+      if (isRecording) {
+        const rec = await engineClient.stopRecording();
+        if (rec) {
+          const newClip: QlPlaylistClip = {
+            id: `audio_clip_${Date.now()}`,
+            trackIndex: rec.trackIndex || 0,
+            startTick: rec.startTick,
+            lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+            kind: "audio",
+            referenceId: rec.filePath,
+            name: rec.fileName,
+            colorHex: "#00e676",
+          };
+          setPlaylist((prev) => ({
+            ...prev,
+            clips: [...prev.clips, newClip],
+          }));
+        }
+      }
       const snap = await engineClient.pause();
       setIsPlaying(snap.isPlaying);
     } else {
+      if (isRecording) {
+        await engineClient.startRecording(songTick, 0);
+      }
       const snap = await engineClient.play();
       setIsPlaying(snap.isPlaying);
     }
-  }, [engineClient, isPlaying]);
+  }, [engineClient, isPlaying, isRecording, songTick, bpm, ppq]);
 
   const handleStop = useCallback(async () => {
+    if (isRecording) {
+      const rec = await engineClient.stopRecording();
+      if (rec) {
+        const newClip: QlPlaylistClip = {
+          id: `audio_clip_${Date.now()}`,
+          trackIndex: rec.trackIndex || 0,
+          startTick: rec.startTick,
+          lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+          kind: "audio",
+          referenceId: rec.filePath,
+          name: rec.fileName,
+          colorHex: "#00e676",
+        };
+        setPlaylist((prev) => ({
+          ...prev,
+          clips: [...prev.clips, newClip],
+        }));
+      }
+    }
     const snap = await engineClient.stop();
     setIsPlaying(snap.isPlaying);
     setSongTick(0);
     setActiveStep(0);
-  }, [engineClient]);
+  }, [engineClient, isRecording, bpm, ppq]);
 
   const handleBpmChange = useCallback(
     async (nextBpm: number) => {
@@ -1288,6 +1563,7 @@ export const App: React.FC = () => {
             channels,
             patterns,
             mixer,
+            playlist,
           },
           null,
           2,
@@ -1302,7 +1578,7 @@ export const App: React.FC = () => {
     a.click();
     URL.revokeObjectURL(url);
     setStatusMessage(`Saved '${projectTitle}' to .qlproj.json`);
-  }, [projectTitle, bpm, ppq, swingRatio, channels, patterns, mixer]);
+  }, [projectTitle, bpm, ppq, swingRatio, channels, patterns, mixer, playlist]);
 
   const handleExportWav = useCallback(async () => {
     try {
@@ -1432,10 +1708,41 @@ export const App: React.FC = () => {
         }}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
+        midiConnectedDevice={midiStatus.connectedDevice}
+        midiActivityActive={isMidiActive}
         onPlayPause={handlePlayPause}
         onStop={handleStop}
-        onRecord={() => setIsRecording((r) => !r)}
-        onModeChange={setMode}
+        onRecord={async () => {
+          if (isPlaying) {
+            if (!isRecording) {
+              await engineClient.startRecording(songTick, 0);
+              setIsRecording(true);
+            } else {
+              const rec = await engineClient.stopRecording();
+              setIsRecording(false);
+              if (rec) {
+                const newClip: QlPlaylistClip = {
+                  id: `audio_clip_${Date.now()}`,
+                  trackIndex: rec.trackIndex || 0,
+                  startTick: rec.startTick,
+                  lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+                  kind: "audio",
+                  referenceId: rec.filePath,
+                  name: rec.fileName,
+                  colorHex: "#00e676",
+                };
+                setPlaylist((prev) => ({
+                  ...prev,
+                  clips: [...prev.clips, newClip],
+                }));
+              }
+            }
+          } else {
+            setIsRecording((r) => !r);
+          }
+        }}
+        onModeChange={handleModeChange}
+        onOpenPluginManager={() => setPluginModalOpen(true)}
         onBpmChange={handleBpmChange}
         onMasterVolumeChange={handleMasterVolumeChange}
         onMasterPitchChange={setMasterPitchCents}
@@ -1548,68 +1855,29 @@ export const App: React.FC = () => {
         {windows.playlist && (
           <FloatingWindow
             state={windows.playlist}
-            title="PLAYLIST ARRANGEMENT (F5)"
+            title="PLAYLIST ARRANGEMENT (F5) — UNLIMITED MULTI-TRACK TIMELINE"
             icon={<Columns3 size={12} />}
             onFocus={focusWindow}
             onChange={updateWindow}
           >
-            <div className="flex flex-col h-full bg-[#1b1f25] p-2 overflow-auto fl-scroll">
-              <div className="text-[10px] text-fl-dim mb-2">
-                Click cells to toggle pattern clips across 8 bars · Select a pattern row to edit in Channel Rack
-              </div>
-              <div className="inline-flex flex-col gap-1">
-                <div className="flex items-center gap-1 pl-[168px]">
-                  {Array.from({ length: 8 }, (_, b) => (
-                    <div
-                      key={b}
-                      className="w-[78px] text-center text-[10px] font-mono text-fl-amber bg-fl-deep py-0.5 rounded-sm"
-                    >
-                      BAR {b + 1}
-                    </div>
-                  ))}
-                </div>
-                {patterns.map((pat) => {
-                  const row = playlistGrid[pat.id] ?? Array.from({ length: 8 }, () => false);
-                  return (
-                    <div key={pat.id} className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setActivePatternId(pat.id)}
-                        className={`w-[164px] h-7 px-2 text-left text-[11px] truncate rounded-sm border border-black/70 fl-bevel cursor-pointer ${
-                          pat.id === activePattern.id
-                            ? "bg-fl-orange text-black font-bold"
-                            : "bg-fl-raised text-fl-text"
-                        }`}
-                      >
-                        {pat.name}
-                      </button>
-                      {Array.from({ length: 8 }, (_, barIdx) => {
-                        const on = row[barIdx] ?? false;
-                        return (
-                          <button
-                            key={barIdx}
-                            type="button"
-                            onClick={() =>
-                              setPlaylistGrid((prev) => {
-                                const cur = prev[pat.id] ?? Array.from({ length: 8 }, () => false);
-                                const next = [...cur];
-                                next[barIdx] = !on;
-                                return { ...prev, [pat.id]: next };
-                              })
-                            }
-                            className={`w-[78px] h-7 rounded-sm border border-black/70 cursor-pointer transition-colors ${
-                              on
-                                ? "bg-fl-orange/80 border-fl-amber shadow-[inset_0_1px_0_rgba(255,255,255,0.3)]"
-                                : "bg-fl-deep hover:bg-white/5"
-                            }`}
-                          />
-                        );
-                      })}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
+            <PlaylistArranger
+              playlist={playlist}
+              patterns={patterns}
+              channels={channels}
+              activePatternId={activePatternId}
+              bpm={bpm}
+              ppq={ppq}
+              songTick={songTick}
+              isPlaying={isPlaying}
+              onUpdatePlaylist={setPlaylist}
+              onSelectPattern={setActivePatternId}
+              onSeekTick={(tick) => {
+                setSongTick(tick);
+                setActiveStep(
+                  Math.floor(tick / (ppq / 4)) % (activePattern.stepCount || 16),
+                );
+              }}
+            />
           </FloatingWindow>
         )}
 
@@ -1633,23 +1901,24 @@ export const App: React.FC = () => {
               onUpdateInsert={handleUpdateInsert}
               onSetEffect={handleSetEffect}
               onToggleBypass={handleToggleBypass}
+              onOpenPluginManager={() => setPluginModalOpen(true)}
             />
           </FloatingWindow>
         )}
 
-        {/* Audio Settings Modal (F10) */}
+        {/* Audio & Hardware Studio Settings Modal (F10) */}
         {audioModalOpen && (
           <div
-            className="fixed inset-0 z-[10000] bg-black/70 grid place-items-center"
+            className="fixed inset-0 z-[10000] bg-black/75 grid place-items-center"
             onPointerDown={() => setAudioModalOpen(false)}
           >
             <div
-              className="w-[460px] rounded bg-[#232830] border border-black/90 shadow-2xl overflow-hidden"
+              className="w-[520px] rounded bg-[#232830] border border-black/90 shadow-2xl overflow-hidden"
               onPointerDown={(e) => e.stopPropagation()}
             >
-              <div className="h-8 px-3 flex items-center justify-between bg-[#2c323b] border-b border-black/70">
+              <div className="h-9 px-3 flex items-center justify-between bg-[#2c323b] border-b border-black/70">
                 <div className="flex items-center gap-2 text-[12px] font-bold text-fl-orange">
-                  <Settings size={14} /> AUDIO SETTINGS — PIPEWIRE / ALSA HARDWARE BUFFER
+                  <Settings size={14} /> AUDIO & HARDWARE STUDIO SETTINGS
                 </div>
                 <button
                   type="button"
@@ -1659,69 +1928,319 @@ export const App: React.FC = () => {
                   <X size={13} />
                 </button>
               </div>
-              <div className="p-4 space-y-4 text-[11px] text-fl-text">
-                <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-1.5 font-mono">
-                  <div className="flex justify-between">
-                    <span className="text-fl-dim">OUTPUT DEVICE:</span>
-                    <span className="text-fl-amber truncate max-w-[260px]">
-                      {audioSettings.deviceName}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-fl-dim">SAMPLE RATE:</span>
-                    <span className="text-fl-led">{audioSettings.sampleRate} Hz</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-fl-dim">ACTIVE BUFFER:</span>
-                    <span className="text-white font-bold">
-                      {audioSettings.bufferSizeFrames} frames (
-                      {((audioSettings.bufferSizeFrames / audioSettings.sampleRate) * 1000).toFixed(1)}{" "}
-                      ms)
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-fl-dim">RESAMPLER / SYNTH:</span>
-                    <span className="text-sky-400">
-                      4-Pt Hermite Cubic + PolyBLEP Anti-Aliased
-                    </span>
-                  </div>
-                </div>
 
-                <div>
-                  <div className="text-[10px] font-bold uppercase tracking-wider text-fl-dim mb-1.5">
-                    Select Fixed Hardware Buffer Size (cpal::BufferSize::Fixed):
-                  </div>
-                  <div className="grid grid-cols-4 gap-2">
-                    {[256, 512, 1024, 2048].map((sz) => {
-                      const active = audioSettings.bufferSizeFrames === sz;
-                      const ms = ((sz / audioSettings.sampleRate) * 1000).toFixed(1);
-                      return (
+              {/* Settings Tabs */}
+              <div className="flex border-b border-black/70 bg-[#1c2026] px-2 pt-1 gap-1">
+                {[
+                  { id: "output", label: "OUTPUT & BUFFER", icon: <SlidersHorizontal size={11} /> },
+                  { id: "input", label: "LIVE VOCAL & INPUT", icon: <Mic size={11} /> },
+                  { id: "midi", label: "HARDWARE MIDI", icon: <Radio size={11} /> },
+                ].map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setAudioSettingsTab(t.id as any)}
+                    className={`px-3 py-1.5 rounded-t text-[10px] font-bold flex items-center gap-1.5 cursor-pointer border-t border-x ${
+                      audioSettingsTab === t.id
+                        ? "bg-[#232830] text-fl-orange border-black/80 border-b-transparent"
+                        : "bg-transparent text-fl-dim border-transparent hover:text-fl-text"
+                    }`}
+                  >
+                    {t.icon}
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="p-4 space-y-4 text-[11px] text-fl-text">
+                {/* TAB 1: AUDIO OUTPUT & HARDWARE BUFFER */}
+                {audioSettingsTab === "output" && (
+                  <>
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-1.5 font-mono">
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">OUTPUT DEVICE:</span>
+                        <span className="text-fl-amber truncate max-w-[280px]">
+                          {audioSettings.deviceName}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">SAMPLE RATE:</span>
+                        <span className="text-fl-led">{audioSettings.sampleRate} Hz</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">ACTIVE BUFFER:</span>
+                        <span className="text-white font-bold">
+                          {audioSettings.bufferSizeFrames} frames (
+                          {((audioSettings.bufferSizeFrames / audioSettings.sampleRate) * 1000).toFixed(1)}{" "}
+                          ms)
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">RESAMPLER / SYNTH:</span>
+                        <span className="text-sky-400">
+                          4-Pt Hermite Cubic + PolyBLEP Anti-Aliased
+                        </span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-fl-dim mb-1.5">
+                        Select Fixed Hardware Buffer Size (cpal::BufferSize::Fixed):
+                      </div>
+                      <div className="grid grid-cols-4 gap-2">
+                        {[256, 512, 1024, 2048].map((sz) => {
+                          const active = audioSettings.bufferSizeFrames === sz;
+                          const ms = ((sz / audioSettings.sampleRate) * 1000).toFixed(1);
+                          return (
+                            <button
+                              key={sz}
+                              type="button"
+                              onClick={() => void handleChangeBufferSize(sz)}
+                              className={`py-2 px-2 rounded border border-black/70 fl-bevel flex flex-col items-center cursor-pointer ${
+                                active
+                                  ? "bg-fl-orange text-black font-bold"
+                                  : "bg-fl-raised text-fl-text hover:bg-white/10"
+                              }`}
+                            >
+                              <span className="text-[12px] font-mono">{sz} smp</span>
+                              <span className="text-[9px] opacity-75">{ms} ms</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex items-start gap-2 p-2 rounded bg-black/30 text-[10px] text-fl-dim">
+                      <CheckCircle2 size={14} className="text-fl-led shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Zero-Allocation Audio Callback Active:</strong> Lock-free SPSC ring
+                        buffers (<code className="text-fl-amber">rtrb</code>), O(1) sparse mixer routing,
+                        and explicit fixed buffer sizing eliminate PipeWire/ALSA underruns.
+                      </span>
+                    </div>
+                  </>
+                )}
+
+                {/* TAB 2: LIVE VOCAL & AUDIO INPUT */}
+                {audioSettingsTab === "input" && (
+                  <div className="space-y-3">
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-fl-dim">RECORDING INPUT DEVICE:</span>
+                        <span className="text-[9px] font-mono text-fl-led">
+                          {audioInputDevices.length} Detected
+                        </span>
+                      </div>
+                      <select
+                        value={selectedInputDevice}
+                        onChange={(e) => setSelectedInputDevice(e.target.value)}
+                        className="w-full h-7 px-2 rounded bg-[#181a20] border border-black/70 text-[11px] text-fl-text cursor-pointer focus:outline-none"
+                      >
+                        {audioInputDevices.map((dev) => (
+                          <option key={dev.name} value={dev.name}>
+                            {dev.name} {dev.isDefault ? "(Default System Input)" : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex flex-col">
+                          <span className="text-[11px] font-bold text-fl-text">
+                            Live Input Monitoring (Mixer Insert 1)
+                          </span>
+                          <span className="text-[9px] text-fl-dim">
+                            Hear microphone input live with real-time insert FX (Reverb, EQ, Compression)
+                          </span>
+                        </div>
                         <button
-                          key={sz}
                           type="button"
-                          onClick={() => void handleChangeBufferSize(sz)}
-                          className={`py-2 px-2 rounded border border-black/70 fl-bevel flex flex-col items-center cursor-pointer ${
-                            active
-                              ? "bg-fl-orange text-black font-bold"
-                              : "bg-fl-raised text-fl-text hover:bg-white/10"
+                          onClick={() => void handleToggleMonitoring(!liveMonitoring)}
+                          className={`px-3 py-1 rounded text-[10px] font-bold border border-black/80 cursor-pointer ${
+                            liveMonitoring
+                              ? "bg-fl-led text-black"
+                              : "bg-fl-raised text-fl-dim hover:text-fl-text"
                           }`}
                         >
-                          <span className="text-[12px] font-mono">{sz} smp</span>
-                          <span className="text-[9px] opacity-75">{ms} ms</span>
+                          {liveMonitoring ? "MONITOR ON" : "MUTED"}
                         </button>
-                      );
-                    })}
-                  </div>
-                </div>
+                      </div>
+                    </div>
 
-                <div className="flex items-start gap-2 p-2 rounded bg-black/30 text-[10px] text-fl-dim">
-                  <CheckCircle2 size={14} className="text-fl-led shrink-0 mt-0.5" />
-                  <span>
-                    <strong>Zero-Allocation Audio Callback Active:</strong> Lock-free SPSC ring
-                    buffers (<code className="text-fl-amber">rtrb</code>), O(1) sparse mixer routing,
-                    and explicit fixed buffer sizing eliminate PipeWire/ALSA underruns.
-                  </span>
-                </div>
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2 font-mono text-[10px]">
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">RECORDING DESTINATION:</span>
+                        <span className="text-fl-amber">samples/recorded_vocal_*.wav</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">FORMAT SPECIFICATION:</span>
+                        <span className="text-sky-400">16-bit PCM / 48kHz Stereo Broadcast WAV</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-fl-dim">PLAYLIST PLACEMENT:</span>
+                        <span className="text-fl-led">Automatic Audio Clip on Stop</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2 rounded bg-black/40">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{
+                            background: isRecording ? "#ff3d3d" : "#555",
+                            boxShadow: isRecording ? "0 0 8px #ff3d3d" : "none",
+                          }}
+                        />
+                        <span className="text-[10px] font-bold">
+                          {isRecording ? "RECORDING ARMED & ACTIVE" : "RECORDING DISARMED"}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setIsRecording((r) => !r)}
+                        className={`px-3 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                          isRecording
+                            ? "bg-red-500 text-white"
+                            : "bg-fl-raised text-fl-text hover:bg-white/10"
+                        }`}
+                      >
+                        {isRecording ? "Disarm Recording" : "Arm Recording"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* TAB 3: PHYSICAL HARDWARE MIDI CONTROLLERS */}
+                {audioSettingsTab === "midi" && (
+                  <div className="space-y-3">
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-fl-dim">AVAILABLE MIDI PORTS:</span>
+                        <span className="text-[9px] font-mono text-fl-led">
+                          {midiDevices.length} Found
+                        </span>
+                      </div>
+                      {midiDevices.length > 0 ? (
+                        <select
+                          value={selectedMidiPortIdx}
+                          onChange={(e) => setSelectedMidiPortIdx(Number(e.target.value))}
+                          className="w-full h-7 px-2 rounded bg-[#181a20] border border-black/70 text-[11px] text-fl-text cursor-pointer focus:outline-none"
+                        >
+                          {midiDevices.map((dev) => (
+                            <option key={dev.index} value={dev.index}>
+                              #{dev.index + 1}: {dev.name} {dev.isConnected ? "(Connected)" : ""}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="p-2 text-center text-[10px] text-fl-dim bg-black/30 rounded">
+                          No hardware MIDI ports detected. Plug in a USB MIDI keyboard or controller.
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2">
+                      <span className="text-[10px] font-bold text-fl-dim">CONTROLLER PROFILE MAPPER:</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {[
+                          {
+                            id: "generic",
+                            name: "Generic USB",
+                            desc: "Keys, CC7 Vol, CC10 Pan",
+                          },
+                          {
+                            id: "akai_fire",
+                            name: "Akai Fire",
+                            desc: "4-Encoder Vol/Pan & Pads",
+                          },
+                          {
+                            id: "novation_launchkey",
+                            name: "Launchkey",
+                            desc: "Faders 1..8 -> Inserts 1..8",
+                          },
+                        ].map((prof) => {
+                          const active = selectedMidiProfile === prof.id;
+                          return (
+                            <button
+                              key={prof.id}
+                              type="button"
+                              onClick={() => setSelectedMidiProfile(prof.id as MidiControllerProfile)}
+                              className={`p-2 rounded border border-black/70 fl-bevel flex flex-col items-start cursor-pointer text-left ${
+                                active
+                                  ? "bg-fl-orange text-black font-bold"
+                                  : "bg-fl-raised text-fl-text hover:bg-white/10"
+                              }`}
+                            >
+                              <span className="text-[11px] font-bold">{prof.name}</span>
+                              <span className="text-[8px] opacity-75">{prof.desc}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between p-2.5 rounded bg-fl-deep fl-inset">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{
+                            background: isMidiActive
+                              ? "#ffb300"
+                              : midiStatus.connectedDevice
+                                ? "#00e676"
+                                : "#555",
+                            boxShadow: isMidiActive
+                              ? "0 0 8px #ffb300"
+                              : midiStatus.connectedDevice
+                                ? "0 0 6px #00e676"
+                                : "none",
+                          }}
+                        />
+                        <div className="flex flex-col">
+                          <span className="text-[10px] font-bold">
+                            {midiStatus.connectedDevice
+                              ? `CONNECTED: ${midiStatus.connectedDevice}`
+                              : "DISCONNECTED"}
+                          </span>
+                          {midiStatus.lastNotePlayed !== null && (
+                            <span className="text-[9px] font-mono text-fl-amber">
+                              Last Played Note: MIDI #{midiStatus.lastNotePlayed}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {midiStatus.connectedDevice ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleDisconnectMidi()}
+                          className="px-3 py-1 rounded bg-red-500/80 hover:bg-red-500 text-white text-[10px] font-bold cursor-pointer"
+                        >
+                          Disconnect
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={midiDevices.length === 0}
+                          onClick={() => void handleConnectMidi()}
+                          className="px-3 py-1 rounded bg-fl-orange hover:bg-fl-amber text-black text-[10px] font-bold cursor-pointer disabled:opacity-40"
+                        >
+                          Connect Controller
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="flex items-start gap-2 p-2 rounded bg-black/30 text-[10px] text-fl-dim">
+                      <CheckCircle2 size={14} className="text-fl-led shrink-0 mt-0.5" />
+                      <span>
+                        <strong>Sub-Millisecond MIDI Response:</strong> Physical NoteOn/NoteOff and CC
+                        messages bypass OS thread latency and route directly to the audio callback
+                        via lock-free ring buffers.
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1767,6 +2286,18 @@ export const App: React.FC = () => {
             </div>
           </div>
         )}
+
+        {/* VST3 & CLAP Plugin Host & Manager Modal */}
+        <PluginManagerModal
+          open={pluginModalOpen}
+          onClose={() => setPluginModalOpen(false)}
+          availablePlugins={availablePlugins}
+          loadedPlugins={loadedPlugins}
+          onScanPlugins={handleScanPlugins}
+          onLoadPlugin={handleLoadPlugin}
+          onSetParameter={handleSetPluginParameter}
+          onUnloadPlugin={handleUnloadPlugin}
+        />
       </main>
 
       {/* Bottom Hint & Engine Status Bar */}
@@ -1818,7 +2349,7 @@ const PianoRollEditor: React.FC<{
   readonly isPlaying: boolean;
   readonly ppq: number;
   readonly onToggleNote: (stepIdx: number, midiNote: number, isSlide: boolean) => void;
-}> = ({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote }) => {
+}> = React.memo(({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote }) => {
   const [slideMode, setSlideMode] = useState(false);
   const ticksPerStep = ppq / 4;
 
@@ -1883,4 +2414,5 @@ const PianoRollEditor: React.FC<{
       </div>
     </div>
   );
-};
+});
+PianoRollEditor.displayName = "PianoRollEditor";

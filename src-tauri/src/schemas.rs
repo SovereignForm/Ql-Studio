@@ -234,6 +234,133 @@ pub enum RealTimeCommand {
         sends: [QlMixerSend; MAX_MIXER_SENDS],
         send_count: u8,
     },
+    SetInsertPlugin {
+        insert_index: u8,
+        slot_index: u8,
+        plugin_tag: u8,
+        params: [f32; 4],
+        enabled: bool,
+    },
+    SetPluginParam {
+        insert_index: u8,
+        slot_index: u8,
+        param_index: u8,
+        value: f32,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayMode {
+    Pattern,
+    Song,
+}
+
+impl Default for PlayMode {
+    fn default() -> Self {
+        Self::Pattern
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QlPlaylistTrack {
+    pub index: u16,
+    pub name: String,
+    pub color_hex: String,
+    pub height_px: u16,
+    pub muted: bool,
+    pub solo: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QlPlaylistClip {
+    pub id: String,
+    pub track_index: u16,
+    pub start_tick: u64,
+    pub length_ticks: u64,
+    #[serde(default)]
+    pub offset_ticks: u64,
+    pub kind: String, // "pattern" | "audio" | "automation"
+    pub reference_id: String,
+    pub name: String,
+    pub color_hex: String,
+    #[serde(default)]
+    pub muted: bool,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QlAutomationPoint {
+    pub tick: u64,
+    pub value: f32,   // 0.0 .. 1.0
+    pub tension: f32, // -1.0 .. +1.0 for bezier curve
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QlAutomationClip {
+    pub id: String,
+    pub name: String,
+    pub target_type: String, // "channel_volume" | "channel_pan" | "channel_cutoff" | "mixer_fader" | "mixer_pan" | "plugin_param"
+    pub target_id: String,
+    pub target_param_index: Option<u32>,
+    pub points: Vec<QlAutomationPoint>,
+    pub length_ticks: u64,
+    pub color_hex: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QlPlaylistState {
+    pub tracks: Vec<QlPlaylistTrack>,
+    pub clips: Vec<QlPlaylistClip>,
+    pub automation_clips: Vec<QlAutomationClip>,
+    pub loop_start_tick: Option<u64>,
+    pub loop_end_tick: Option<u64>,
+    #[serde(default)]
+    pub play_mode: PlayMode,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginParamInfo {
+    pub id: u32,
+    pub name: String,
+    pub value: f32,
+    pub min_value: f32,
+    pub max_value: f32,
+    pub default_value: f32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginDescriptor {
+    pub id: String,
+    pub path: String,
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+    pub format: String,   // "vst3" | "clap" | "builtin"
+    pub category: String, // "instrument" | "effect" | "analyzer"
+    pub audio_inputs: u32,
+    pub audio_outputs: u32,
+    pub has_editor: bool,
+    #[serde(default)]
+    pub parameters: Vec<PluginParamInfo>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInstanceSummary {
+    pub instance_id: String,
+    pub descriptor: PluginDescriptor,
+    pub target_kind: String, // "mixer_slot" | "channel"
+    pub target_index: u8,    // Mixer insert 0..64 or channel index
+    pub slot_index: Option<u8>,
+    pub parameters: Vec<PluginParamInfo>,
+    pub active: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -247,6 +374,10 @@ pub struct EngineStatusSnapshot {
     pub buffer_size_frames: u32,
     pub next_unscheduled_tick: u64,
     pub audio_stream_active: bool,
+    #[serde(default)]
+    pub play_mode: PlayMode,
+    #[serde(default)]
+    pub song_tick: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

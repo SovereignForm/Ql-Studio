@@ -14,10 +14,12 @@ use crate::sampler::{
     LoadedSampleSummary, SharedStereoPcm, MAX_SAMPLE_SLOTS,
 };
 use crate::scheduler::{NativeLookaheadScheduler, RealTimeAudioEngine};
+use crate::plugins::{PluginHostManager, SharedPluginHost};
 use crate::schemas::{
-    AudioSettingsSnapshot, EngineStatusSnapshot, PpqResolution, QlChannel, QlMixerSend,
-    QlMixerState, QlPattern, RealTimeCommand, ScheduledAudioEventPod, TimeSignature,
-    MAX_MIXER_INSERTS, MAX_MIXER_SENDS,
+    AudioSettingsSnapshot, EngineStatusSnapshot, PlayMode, PluginDescriptor,
+    PluginInstanceSummary, PpqResolution, QlChannel, QlMixerSend, QlMixerState, QlPattern,
+    QlPlaylistState, RealTimeCommand, ScheduledAudioEventPod, TimeSignature, MAX_MIXER_INSERTS,
+    MAX_MIXER_SENDS,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -49,6 +51,9 @@ pub struct QlEngineController {
     pub shared: Arc<Mutex<SharedLookaheadState>>,
     pub is_playing_atomic: Arc<AtomicBool>,
     pub current_frame_estimate: Arc<AtomicU64>,
+    pub plugin_host: SharedPluginHost,
+    pub midi_manager: Arc<Mutex<crate::midi::MidiManager>>,
+    pub audio_recorder: Arc<Mutex<crate::audio_record::AudioRecorderManager>>,
     _cpal_stream: Mutex<Option<Box<dyn Send + Sync>>>,
 }
 
@@ -64,6 +69,10 @@ impl QlEngineController {
         let (sample_producer, sample_consumer) = RingBuffer::<(u8, SharedStereoPcm)>::new(64);
         let (sample_gc_producer, sample_gc_consumer) = RingBuffer::<SharedStereoPcm>::new(64);
 
+        let (midi_event_producer, midi_event_consumer) = RingBuffer::<ScheduledAudioEventPod>::new(2048);
+        let (midi_cmd_producer, midi_cmd_consumer) = RingBuffer::<RealTimeCommand>::new(512);
+        let (monitor_producer, monitor_consumer) = RingBuffer::<f32>::new(8192);
+
         let is_playing_atomic = Arc::new(AtomicBool::new(false));
         let current_frame_estimate = Arc::new(AtomicU64::new(0));
 
@@ -74,6 +83,9 @@ impl QlEngineController {
                 command_consumer,
                 sample_consumer,
                 sample_gc_producer,
+                midi_event_consumer,
+                midi_cmd_consumer,
+                monitor_consumer,
                 current_frame_estimate.clone(),
             );
 
@@ -152,10 +164,25 @@ impl QlEngineController {
             })
             .ok();
 
+        let plugin_host = Arc::new(Mutex::new(PluginHostManager::new()));
+
+        let midi_manager = Arc::new(Mutex::new(crate::midi::MidiManager::new(
+            midi_event_producer,
+            midi_cmd_producer,
+            current_frame_estimate.clone(),
+        )));
+
+        let audio_recorder = Arc::new(Mutex::new(crate::audio_record::AudioRecorderManager::new(
+            Some(monitor_producer),
+        )));
+
         Self {
             shared,
             is_playing_atomic,
             current_frame_estimate,
+            plugin_host,
+            midi_manager,
+            audio_recorder,
             _cpal_stream: Mutex::new(
                 stream_holder.map(|s| Box::new(s) as Box<dyn Send + Sync>),
             ),
@@ -168,6 +195,9 @@ impl QlEngineController {
         command_consumer: Consumer<RealTimeCommand>,
         sample_consumer: Consumer<(u8, SharedStereoPcm)>,
         sample_gc_producer: Producer<SharedStereoPcm>,
+        midi_event_consumer: Consumer<ScheduledAudioEventPod>,
+        midi_cmd_consumer: Consumer<RealTimeCommand>,
+        monitor_consumer: Consumer<f32>,
         frame_counter: Arc<AtomicU64>,
     ) -> (u32, String, u32, Option<StreamHolder>) {
         let host = cpal::default_host();
@@ -200,7 +230,9 @@ impl QlEngineController {
 
         let mut rt_engine = Box::new(
             RealTimeAudioEngine::new(sample_rate, event_consumer, command_consumer)
-                .with_sample_channels(sample_consumer, sample_gc_producer),
+                .with_sample_channels(sample_consumer, sample_gc_producer)
+                .with_midi(midi_event_consumer, midi_cmd_consumer)
+                .with_live_monitor(monitor_consumer),
         );
         let fc_for_cb = frame_counter.clone();
 
@@ -545,6 +577,10 @@ pub fn set_audio_buffer_size(
     let (sample_producer, sample_consumer) = RingBuffer::<(u8, SharedStereoPcm)>::new(64);
     let (sample_gc_producer, sample_gc_consumer) = RingBuffer::<SharedStereoPcm>::new(64);
 
+    let (midi_ev_prod, midi_ev_cons) = RingBuffer::<ScheduledAudioEventPod>::new(2048);
+    let (midi_cmd_prod, midi_cmd_cons) = RingBuffer::<RealTimeCommand>::new(512);
+    let (monitor_prod, monitor_cons) = RingBuffer::<f32>::new(8192);
+
     // Drop old stream before opening reconfigured hardware stream
     if let Ok(mut stream_slot) = state._cpal_stream.lock() {
         *stream_slot = None;
@@ -557,8 +593,28 @@ pub fn set_audio_buffer_size(
             command_consumer,
             sample_consumer,
             sample_gc_producer,
+            midi_ev_cons,
+            midi_cmd_cons,
+            monitor_cons,
             state.current_frame_estimate.clone(),
         );
+
+    if let Ok(mm) = state.midi_manager.lock() {
+        if let Ok(mut ep) = mm.event_producer.lock() {
+            *ep = midi_ev_prod;
+        }
+        if let Ok(mut cp) = mm.command_producer.lock() {
+            *cp = midi_cmd_prod;
+        }
+    }
+
+    if let Ok(ar) = state.audio_recorder.lock() {
+        if let Some(ref mp) = ar.monitor_producer {
+            if let Ok(mut prod) = mp.lock() {
+                *prod = monitor_prod;
+            }
+        }
+    }
 
     let has_stream = stream_holder.is_some();
     if let Ok(mut stream_slot) = state._cpal_stream.lock() {
@@ -634,5 +690,247 @@ fn snapshot_from_guard(guard: &SharedLookaheadState) -> EngineStatusSnapshot {
         buffer_size_frames: guard.buffer_size_frames,
         next_unscheduled_tick: guard.scheduler.next_unscheduled_tick,
         audio_stream_active: guard.audio_stream_active,
+        play_mode: guard.scheduler.play_mode,
+        song_tick: guard.scheduler.next_unscheduled_tick,
     }
+}
+
+#[tauri::command]
+pub fn set_play_mode(
+    mode: PlayMode,
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.set_play_mode(mode);
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn update_arrangement(
+    playlist: QlPlaylistState,
+    patterns: Vec<QlPattern>,
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    guard.scheduler.update_arrangement(playlist, patterns);
+    Ok(snapshot_from_guard(&guard))
+}
+
+#[tauri::command]
+pub fn scan_plugins(
+    custom_paths: Vec<String>,
+    state: State<'_, QlEngineController>,
+) -> Result<Vec<PluginDescriptor>, String> {
+    let mut host = state.plugin_host.lock().map_err(|e| e.to_string())?;
+    let discovered = host.scan(&custom_paths);
+    Ok(discovered)
+}
+
+#[tauri::command]
+pub fn get_available_plugins(
+    state: State<'_, QlEngineController>,
+) -> Result<Vec<PluginDescriptor>, String> {
+    let host = state.plugin_host.lock().map_err(|e| e.to_string())?;
+    Ok(host.known_plugins.clone())
+}
+
+#[tauri::command]
+pub fn load_plugin(
+    plugin_id: String,
+    target_kind: String,
+    target_index: u8,
+    slot_index: Option<u8>,
+    state: State<'_, QlEngineController>,
+) -> Result<PluginInstanceSummary, String> {
+    let summary = {
+        let mut host = state.plugin_host.lock().map_err(|e| e.to_string())?;
+        host.load_plugin(&plugin_id, &target_kind, target_index, slot_index)?
+    };
+
+    if target_kind == "mixer_slot" {
+        if let Some(slot) = slot_index {
+            let tag = match plugin_id.as_str() {
+                "builtin:ql_vintage_tape" => 1,
+                "builtin:ql_master_limiter" => 2,
+                "builtin:ql_stereo_imager" => 3,
+                _ => 4,
+            };
+            let mut params = [0.0f32; 4];
+            for (i, p) in summary.parameters.iter().take(4).enumerate() {
+                params[i] = p.value;
+            }
+            if let Ok(mut guard) = state.shared.lock() {
+                let _ = guard.command_producer.push(RealTimeCommand::SetInsertPlugin {
+                    insert_index: target_index,
+                    slot_index: slot,
+                    plugin_tag: tag,
+                    params,
+                    enabled: true,
+                });
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+#[tauri::command]
+pub fn set_plugin_parameter(
+    instance_id: String,
+    param_id: u32,
+    value: f32,
+    state: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let (target_kind, target_index, slot_index) = {
+        let mut host = state.plugin_host.lock().map_err(|e| e.to_string())?;
+        host.set_parameter(&instance_id, param_id, value)?;
+        let inst = host.instances.get(&instance_id).ok_or("Instance missing")?;
+        (inst.target_kind.clone(), inst.target_index, inst.slot_index)
+    };
+
+    if target_kind == "mixer_slot" {
+        if let Some(slot) = slot_index {
+            if let Ok(mut guard) = state.shared.lock() {
+                let _ = guard.command_producer.push(RealTimeCommand::SetPluginParam {
+                    insert_index: target_index,
+                    slot_index: slot,
+                    param_index: param_id as u8,
+                    value,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn unload_plugin(
+    instance_id: String,
+    state: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let (target_kind, target_index, slot_index) = {
+        let mut host = state.plugin_host.lock().map_err(|e| e.to_string())?;
+        let inst = host.instances.get(&instance_id).cloned().ok_or("Instance missing")?;
+        host.unload_plugin(&instance_id)?;
+        (inst.target_kind, inst.target_index, inst.slot_index)
+    };
+
+    if target_kind == "mixer_slot" {
+        if let Some(slot) = slot_index {
+            if let Ok(mut guard) = state.shared.lock() {
+                let _ = guard.command_producer.push(RealTimeCommand::SetInsertPlugin {
+                    insert_index: target_index,
+                    slot_index: slot,
+                    plugin_tag: 0,
+                    params: [0.0; 4],
+                    enabled: false,
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_loaded_plugins(
+    state: State<'_, QlEngineController>,
+) -> Result<Vec<PluginInstanceSummary>, String> {
+    let host = state.plugin_host.lock().map_err(|e| e.to_string())?;
+    Ok(host.get_instance_summaries())
+}
+
+#[tauri::command]
+pub fn get_audio_input_devices() -> Result<Vec<crate::audio_record::AudioInputDeviceInfo>, String> {
+    Ok(crate::audio_record::AudioRecorderManager::list_input_devices())
+}
+
+#[tauri::command]
+pub fn start_recording(
+    start_tick: u64,
+    track_index: u16,
+    controller: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let mut recorder = controller
+        .audio_recorder
+        .lock()
+        .map_err(|e| format!("Failed to lock audio recorder: {e}"))?;
+    recorder.start_recording(start_tick, track_index);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_recording(
+    controller: State<'_, QlEngineController>,
+) -> Result<Option<crate::audio_record::RecordedAudioSummary>, String> {
+    let mut recorder = controller
+        .audio_recorder
+        .lock()
+        .map_err(|e| format!("Failed to lock audio recorder: {e}"))?;
+    let samples_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("samples");
+    recorder.stop_recording(&samples_dir)
+}
+
+#[tauri::command]
+pub fn set_live_monitoring(
+    enabled: bool,
+    controller: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let recorder = controller
+        .audio_recorder
+        .lock()
+        .map_err(|e| format!("Failed to lock audio recorder: {e}"))?;
+    recorder.set_live_monitoring(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_midi_input_devices(
+    controller: State<'_, QlEngineController>,
+) -> Result<Vec<crate::midi::MidiDeviceInfo>, String> {
+    let mgr = controller
+        .midi_manager
+        .lock()
+        .map_err(|e| format!("Failed to lock midi manager: {e}"))?;
+    Ok(mgr.list_ports())
+}
+
+#[tauri::command]
+pub fn connect_midi_device(
+    port_index: usize,
+    profile: crate::midi::MidiControllerProfile,
+    controller: State<'_, QlEngineController>,
+) -> Result<String, String> {
+    let mut mgr = controller
+        .midi_manager
+        .lock()
+        .map_err(|e| format!("Failed to lock midi manager: {e}"))?;
+    mgr.connect_port(port_index, profile)
+}
+
+#[tauri::command]
+pub fn disconnect_midi_device(
+    controller: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let mut mgr = controller
+        .midi_manager
+        .lock()
+        .map_err(|e| format!("Failed to lock midi manager: {e}"))?;
+    mgr.disconnect();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_midi_status(
+    controller: State<'_, QlEngineController>,
+) -> Result<crate::midi::MidiStatusSnapshot, String> {
+    let mgr = controller
+        .midi_manager
+        .lock()
+        .map_err(|e| format!("Failed to lock midi manager: {e}"))?;
+    Ok(mgr.get_status())
 }

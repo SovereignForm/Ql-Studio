@@ -62,9 +62,9 @@ jobs:
             local asset_id="$1"
             local out="$2"
             local min_size="$3"
-            for i in 1 2 3; do
+            for i in 1 2 3 4 5; do
               rm -f "$out"
-              curl -f -sSL --connect-timeout 15 -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/$asset_id" -o "$out" 2>/dev/null || true
+              curl -f -sSL --connect-timeout 15 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/$asset_id" -o "$out" 2>/dev/null || true
               if [ -f "$out" ]; then
                 local size=$(wc -c < "$out")
                 local magic=$(head -c 4 "$out")
@@ -75,7 +75,7 @@ jobs:
                 fi
               fi
               echo "Attempt $i failed or invalid format. Retrying..."
-              sleep 2
+              sleep 3
             done
             rm -f "$out"
             return 1
@@ -85,7 +85,7 @@ jobs:
           
           if get_elf "576945544" ~/.cache/tauri/linuxdeploy-07333c6-x86_64.AppImage 10000000; then
             cp ~/.cache/tauri/linuxdeploy-07333c6-x86_64.AppImage ~/.cache/tauri/linuxdeploy-x86_64.AppImage
-            curl -f -sSL --connect-timeout 15 -H "Accept: application/octet-stream" "https://api.github.com/repos/linuxdeploy/linuxdeploy-plugin-appimage/releases/assets/602435573" -o ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage 2>/dev/null || true
+            curl -f -sSL --connect-timeout 15 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" "https://api.github.com/repos/linuxdeploy/linuxdeploy-plugin-appimage/releases/assets/602435573" -o ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage 2>/dev/null || true
             if [ -f ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage ]; then
               chmod +x ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage
               cp ~/.cache/tauri/linuxdeploy-plugin-appimage.AppImage ~/.cache/tauri/linuxdeploy-plugin-appimage-x86_64.AppImage
@@ -105,35 +105,43 @@ jobs:
           $tauriDir = Join-Path $env:LOCALAPPDATA "tauri"
           New-Item -ItemType Directory -Force -Path $tauriDir
 
-          Write-Host "Downloading NSIS 3.13 via GitHub API stream..."
+          function Download-GitHubAsset($repo, $assetId, $dest, $minSize) {
+            for ($i = 1; $i -le 5; $i++) {
+              if (Test-Path $dest) { Remove-Item -Force $dest }
+              curl.exe -f -sSL --connect-timeout 15 -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/octet-stream" "https://api.github.com/repos/$repo/releases/assets/$assetId" -o $dest
+              if ((Test-Path $dest) -and ((Get-Item $dest).Length -gt $minSize)) {
+                return $true
+              }
+              Write-Host "Attempt $i for $assetId failed, retrying in 3s..."
+              Start-Sleep -Seconds 3
+            }
+            return $false
+          }
+
+          Write-Host "Downloading NSIS 3.13..."
           $nsisZip = Join-Path $env:TEMP "nsis-3.13.zip"
-          curl.exe -sSL --retry 3 -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/binary-releases/releases/assets/623832696" -o $nsisZip
-          Expand-Archive -Path $nsisZip -DestinationPath $tauriDir -Force
-          $extractedNsis = Join-Path $tauriDir "nsis-3.13"
-          $targetNsis = Join-Path $tauriDir "NSIS"
-          if (Test-Path $targetNsis) { Remove-Item -Recurse -Force $targetNsis }
-          Rename-Item -Path $extractedNsis -NewName "NSIS"
+          if (Download-GitHubAsset "tauri-apps/binary-releases" "623832696" $nsisZip 1000000) {
+            Expand-Archive -Path $nsisZip -DestinationPath $tauriDir -Force
+            $extractedNsis = Join-Path $tauriDir "nsis-3.13"
+            $targetNsis = Join-Path $tauriDir "NSIS"
+            if (Test-Path $targetNsis) { Remove-Item -Recurse -Force $targetNsis }
+            Rename-Item -Path $extractedNsis -NewName "NSIS"
 
-          Write-Host "Downloading NSIS Tauri Utils..."
-          $pluginDir = Join-Path $targetNsis "Plugins\x86-unicode\additional"
-          New-Item -ItemType Directory -Force -Path $pluginDir
-          curl.exe -sSL --retry 3 -H "Accept: application/octet-stream" "https://api.github.com/repos/tauri-apps/nsis-tauri-utils/releases/assets/345882097" -o (Join-Path $pluginDir "nsis_tauri_utils.dll")
+            $pluginDir = Join-Path $targetNsis "Plugins\x86-unicode\additional"
+            New-Item -ItemType Directory -Force -Path $pluginDir
+            Download-GitHubAsset "tauri-apps/nsis-tauri-utils" "345882097" (Join-Path $pluginDir "nsis_tauri_utils.dll") 10000 | Out-Null
+          }
 
-          Write-Host "Downloading WiX 3.14 via GitHub API stream..."
+          Write-Host "Downloading WiX 3.14..."
           $wixDir = Join-Path $tauriDir "WixTools314"
           New-Item -ItemType Directory -Force -Path $wixDir
           $wixZip = Join-Path $env:TEMP "wix314.zip"
-          curl.exe -sSL --retry 3 -H "Accept: application/octet-stream" "https://api.github.com/repos/wixtoolset/wix3/releases/assets/158158052" -o $wixZip
-          Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
+          if (Download-GitHubAsset "wixtoolset/wix3" "158158052" $wixZip 10000000) {
+            Expand-Archive -Path $wixZip -DestinationPath $wixDir -Force
+          }
 
           Write-Host "Downloading WebView2 Bootstrapper..."
-          curl.exe -sSL "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -o (Join-Path $tauriDir "MicrosoftEdgeWebview2Setup.exe")
-
-          # Also mirror to $HOME\.cache\tauri for cross-path compatibility
-          $homeCache = Join-Path $HOME ".cache\tauri"
-          New-Item -ItemType Directory -Force -Path $homeCache
-          Copy-Item -Recurse -Force "$targetNsis" "$homeCache\NSIS"
-          Copy-Item -Recurse -Force "$wixDir" "$homeCache\WixTools314"
+          curl.exe -f -sSL "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -o (Join-Path $tauriDir "MicrosoftEdgeWebview2Setup.exe")
 
           Get-ChildItem -Path $tauriDir
 

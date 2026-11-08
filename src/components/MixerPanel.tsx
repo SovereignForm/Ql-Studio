@@ -24,12 +24,13 @@ export interface MixerPanelProps {
   readonly onUpdateInsert: (index: number, patch: InsertPatch) => void;
   readonly onSetEffect: (insertIndex: number, slotIndex: number, config: InsertEffectConfig | null) => void;
   readonly onToggleBypass: (insertIndex: number, slotIndex: number) => void;
+  readonly onOpenPluginManager?: () => void;
 }
 
 const FADER_MIN = -60;
 const FADER_MAX = 5.6;
 
-export const MixerPanel: React.FC<MixerPanelProps> = ({
+export const MixerPanel: React.FC<MixerPanelProps> = React.memo(({
   mixer,
   levels,
   selectedInsert,
@@ -38,6 +39,7 @@ export const MixerPanel: React.FC<MixerPanelProps> = ({
   onUpdateInsert,
   onSetEffect,
   onToggleBypass,
+  onOpenPluginManager,
 }) => {
   const sel = mixer.inserts.find((i) => i.index === selectedInsert) ?? mixer.inserts[0]!;
   return (
@@ -57,10 +59,15 @@ export const MixerPanel: React.FC<MixerPanelProps> = ({
           ))}
         </div>
       </div>
-      <Inspector insert={sel} onSetEffect={onSetEffect} onToggleBypass={onToggleBypass} />
+      <Inspector
+        insert={sel}
+        onSetEffect={onSetEffect}
+        onToggleBypass={onToggleBypass}
+        onOpenPluginManager={onOpenPluginManager}
+      />
     </div>
   );
-};
+});
 
 const MixerStrip: React.FC<{
   readonly insert: QlMixerInsert;
@@ -69,7 +76,7 @@ const MixerStrip: React.FC<{
   readonly inUse: boolean;
   readonly onSelect: () => void;
   readonly onUpdate: (patch: InsertPatch) => void;
-}> = ({ insert, level, selected, inUse, onSelect, onUpdate }) => {
+}> = React.memo(({ insert, level, selected, inUse, onSelect, onUpdate }) => {
   const isMaster = insert.index === 0;
   return (
     <div
@@ -130,7 +137,8 @@ const MixerStrip: React.FC<{
       </div>
     </div>
   );
-};
+});
+MixerStrip.displayName = "MixerStrip";
 
 /** Long-throw vertical fader (dB-linear travel). Double-click resets to 0 dB. */
 const Fader: React.FC<{ readonly value: number; readonly onChange: (db: number) => void }> = ({ value, onChange }) => {
@@ -208,13 +216,26 @@ const Inspector: React.FC<{
   readonly insert: QlMixerInsert;
   readonly onSetEffect: MixerPanelProps["onSetEffect"];
   readonly onToggleBypass: MixerPanelProps["onToggleBypass"];
-}> = ({ insert, onSetEffect, onToggleBypass }) => {
+  readonly onOpenPluginManager?: () => void;
+}> = ({ insert, onSetEffect, onToggleBypass, onOpenPluginManager }) => {
   const firstEqSlot = insert.effectSlots.find((s) => !s.bypassed && s.config.kind === "parametric_eq")?.slotIndex;
   return (
     <div className="w-[250px] shrink-0 border-l border-black/80 bg-[#20242a] flex flex-col">
-      <div className="h-6 px-2 flex items-center text-[11px] font-semibold border-b border-black/70">
-        <span className="text-fl-orange mr-1">{insert.index === 0 ? "Master" : `Insert ${insert.index}`}</span>
-        <span className="text-fl-dim">· FX chain</span>
+      <div className="h-6 px-2 flex items-center justify-between text-[11px] font-semibold border-b border-black/70">
+        <div>
+          <span className="text-fl-orange mr-1">{insert.index === 0 ? "Master" : `Insert ${insert.index}`}</span>
+          <span className="text-fl-dim">· FX chain</span>
+        </div>
+        {onOpenPluginManager && (
+          <button
+            type="button"
+            onClick={onOpenPluginManager}
+            title="Open VST3 / CLAP Plugin Manager"
+            className="text-[9px] font-bold text-fl-amber hover:text-white px-1.5 py-0.5 rounded bg-fl-deep border border-black/60 cursor-pointer"
+          >
+            + VST / CLAP
+          </button>
+        )}
       </div>
       <div className="flex-1 overflow-y-auto fl-scroll p-1.5 space-y-[3px]">
         {Array.from({ length: 10 }, (_, slotIndex) => {

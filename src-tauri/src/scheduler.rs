@@ -11,10 +11,11 @@ use crate::sampler::{
     build_starter_drum_kit, hermite_interpolate_stereo, SharedStereoPcm, MAX_SAMPLE_SLOTS,
 };
 use crate::schemas::{
-    AudioScheduledEventKind, PpqResolution, QlChannel, QlPattern, RealTimeCommand,
-    ScheduledAudioEventPod, WaveformShape, MAX_ACTIVE_VOICES, MAX_MIXER_INSERTS,
+    AudioScheduledEventKind, PlayMode, PpqResolution, QlChannel, QlPattern, QlPlaylistState,
+    RealTimeCommand, ScheduledAudioEventPod, WaveformShape, MAX_ACTIVE_VOICES, MAX_MIXER_INSERTS,
 };
 use rtrb::{Consumer, Producer};
+use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy, Debug)]
@@ -109,6 +110,9 @@ pub struct NativeLookaheadScheduler {
     pub lookahead_window_sec: f64,
     pub next_unscheduled_tick: u64,
     pub is_playing: bool,
+    pub play_mode: PlayMode,
+    pub playlist: QlPlaylistState,
+    pub patterns_map: HashMap<String, QlPattern>,
 }
 
 impl NativeLookaheadScheduler {
@@ -119,6 +123,9 @@ impl NativeLookaheadScheduler {
             lookahead_window_sec: 0.065, // 65 ms generous lookahead horizon for PipeWire/ALSA stability
             next_unscheduled_tick: 0,
             is_playing: false,
+            play_mode: PlayMode::Pattern,
+            playlist: QlPlaylistState::default(),
+            patterns_map: HashMap::new(),
         }
     }
 
@@ -130,6 +137,19 @@ impl NativeLookaheadScheduler {
         self.global_swing_ratio = swing_ratio.clamp(0.50, 0.75);
     }
 
+    pub fn set_play_mode(&mut self, mode: PlayMode) {
+        self.play_mode = mode;
+        self.next_unscheduled_tick = 0;
+    }
+
+    pub fn update_arrangement(&mut self, playlist: QlPlaylistState, patterns: Vec<QlPattern>) {
+        self.playlist = playlist;
+        self.patterns_map.clear();
+        for p in patterns {
+            self.patterns_map.insert(p.id.clone(), p);
+        }
+    }
+
     pub fn advance_lookahead(
         &mut self,
         current_sample_frame: u64,
@@ -137,184 +157,286 @@ impl NativeLookaheadScheduler {
         channels: &[QlChannel],
         event_producer: &mut Producer<ScheduledAudioEventPod>,
     ) -> usize {
-        if !self.is_playing || pattern.step_count == 0 {
+        if !self.is_playing {
             return 0;
         }
 
         let lookahead_frames =
             (self.lookahead_window_sec * (self.metrics.sample_rate as f64)).round() as u64;
         let horizon_frame = current_sample_frame.saturating_add(lookahead_frames);
-        let pattern_len_ticks =
-            (pattern.step_count * self.metrics.ticks_per_sixteenth).max(1) as u64;
         let any_solo = channels.iter().any(|ch| ch.solo);
         let mut scheduled_count = 0usize;
 
-        loop {
-            let tick_sample_frame =
-                ((self.next_unscheduled_tick as f64) * self.metrics.samples_per_tick).round() as u64;
-            if tick_sample_frame > horizon_frame {
-                break;
+        if self.play_mode == PlayMode::Pattern {
+            if pattern.step_count == 0 {
+                return 0;
             }
-            if event_producer.is_full() {
-                break;
+            let pattern_len_ticks =
+                (pattern.step_count * self.metrics.ticks_per_sixteenth).max(1) as u64;
+
+            loop {
+                let tick_sample_frame =
+                    ((self.next_unscheduled_tick as f64) * self.metrics.samples_per_tick).round() as u64;
+                if tick_sample_frame > horizon_frame || event_producer.is_full() {
+                    break;
+                }
+                let local_tick = (self.next_unscheduled_tick % pattern_len_ticks) as u32;
+                scheduled_count += schedule_channel_tick_events(
+                    tick_sample_frame,
+                    local_tick,
+                    pattern,
+                    channels,
+                    &self.metrics,
+                    self.global_swing_ratio,
+                    any_solo,
+                    event_producer,
+                );
+                self.next_unscheduled_tick += 1;
+            }
+        } else {
+            // Song Mode arrangement
+            if self.playlist.clips.is_empty() {
+                return 0;
             }
 
-            let local_tick = (self.next_unscheduled_tick % pattern_len_ticks) as u32;
-
-            for channel in channels {
-                let audible = if any_solo {
-                    channel.solo
-                } else {
-                    !channel.muted
-                };
-                if !audible {
-                    continue;
+            loop {
+                let tick_sample_frame =
+                    ((self.next_unscheduled_tick as f64) * self.metrics.samples_per_tick).round() as u64;
+                if tick_sample_frame > horizon_frame || event_producer.is_full() {
+                    break;
                 }
 
-                let Some(ch_data) = pattern.channel_data.get(&channel.id) else {
-                    continue;
-                };
-
-                let ch_gain = db_to_linear(channel.volume_db);
-                let sample_slot = channel.sample_slot.unwrap_or_else(|| {
-                    if channel.waveform == WaveformShape::SamplerPcm {
-                        (channel.index as u8) % 4
-                    } else {
-                        0xFF
+                if let Some(loop_end) = self.playlist.loop_end_tick {
+                    if self.next_unscheduled_tick >= loop_end {
+                        self.next_unscheduled_tick = self.playlist.loop_start_tick.unwrap_or(0);
                     }
-                });
+                }
 
-                // 1. Step Sequencer Events
-                for (step_idx, step) in ch_data.steps.iter().enumerate() {
-                    if !step.active {
+                for clip in &self.playlist.clips {
+                    if clip.muted {
                         continue;
                     }
-                    let swung_tick = compute_swung_step_tick(
-                        step_idx as u32,
-                        self.metrics.ppq,
-                        self.global_swing_ratio,
-                        channel.swing_multiplier,
-                        step.shift_ticks,
-                    );
-                    if swung_tick == local_tick {
-                        let dur_ticks = ((self.metrics.ticks_per_sixteenth as f32) * step.gate_ratio)
-                            .round()
-                            .max(1.0) as f64;
-                        let duration_frames =
-                            (dur_ticks * self.metrics.samples_per_tick).round().max(1.0) as u64;
-
-                        let midi_note = (channel.root_midi_note as i16
-                            + channel.pitch_semitones as i16
-                            + step.pitch_offset_semitones as i16)
-                            .clamp(0, 127) as u8;
-                        let total_cents =
-                            (channel.pitch_cents as f64) + (step.fine_pitch_cents as f64);
-                        let freq_hz = midi_note_to_frequency_hz(midi_note, total_cents);
-                        let vel_norm = (step.velocity.min(127) as f32) / 127.0;
-
-                        let pod = ScheduledAudioEventPod {
-                            sample_frame: tick_sample_frame,
-                            duration_frames,
-                            channel_index: channel.index,
-                            assigned_mixer_insert: channel.assigned_mixer_insert,
-                            voice_color_group: 0,
-                            kind: AudioScheduledEventKind::NoteOn,
-                            waveform: channel.waveform,
-                            sample_slot,
-                            root_midi_note: channel.root_midi_note,
-                            midi_note,
-                            velocity: step.velocity,
-                            start_freq_hz: freq_hz,
-                            target_freq_hz: freq_hz,
-                            pan: (channel.pan + step.fine_pan).clamp(-1.0, 1.0),
-                            gain_linear: ch_gain * vel_norm,
-                        };
-                        let _ = event_producer.push(pod);
-                        scheduled_count += 1;
+                    if self.next_unscheduled_tick >= clip.start_tick
+                        && self.next_unscheduled_tick < clip.start_tick + clip.length_ticks
+                    {
+                        if clip.kind == "pattern" {
+                            let pat = self
+                                .patterns_map
+                                .get(&clip.reference_id)
+                                .unwrap_or(pattern);
+                            let pat_len =
+                                (pat.step_count * self.metrics.ticks_per_sixteenth).max(1) as u64;
+                            let local_tick =
+                                ((self.next_unscheduled_tick - clip.start_tick + clip.offset_ticks)
+                                    % pat_len) as u32;
+                            scheduled_count += schedule_channel_tick_events(
+                                tick_sample_frame,
+                                local_tick,
+                                pat,
+                                channels,
+                                &self.metrics,
+                                self.global_swing_ratio,
+                                any_solo,
+                                event_producer,
+                            );
+                        } else if clip.kind == "audio" {
+                            if self.next_unscheduled_tick == clip.start_tick {
+                                if let Some(ch) = channels.iter().find(|c| c.id == clip.reference_id) {
+                                    let ch_gain = db_to_linear(ch.volume_db);
+                                    let sample_slot = ch.sample_slot.unwrap_or(0);
+                                    let pod = ScheduledAudioEventPod {
+                                        sample_frame: tick_sample_frame,
+                                        duration_frames: (clip.length_ticks as f64 * self.metrics.samples_per_tick).round() as u64,
+                                        channel_index: ch.index,
+                                        assigned_mixer_insert: ch.assigned_mixer_insert,
+                                        voice_color_group: 0,
+                                        kind: AudioScheduledEventKind::NoteOn,
+                                        waveform: WaveformShape::SamplerPcm,
+                                        sample_slot,
+                                        root_midi_note: ch.root_midi_note,
+                                        midi_note: 60,
+                                        velocity: 100,
+                                        start_freq_hz: 261.63,
+                                        target_freq_hz: 261.63,
+                                        pan: ch.pan,
+                                        gain_linear: ch_gain,
+                                    };
+                                    let _ = event_producer.push(pod);
+                                    scheduled_count += 1;
+                                }
+                            }
+                        }
                     }
                 }
-
-                // 2. Piano Roll Normal & Slide Notes
-                for note in &ch_data.notes {
-                    if note.start_tick != local_tick {
-                        continue;
-                    }
-
-                    let duration_frames = ((note.duration_ticks as f64)
-                        * self.metrics.samples_per_tick)
-                        .round()
-                        .max(1.0) as u64;
-                    let total_cents = (channel.pitch_cents as f64) + (note.fine_pitch_cents as f64);
-                    let note_freq_hz = midi_note_to_frequency_hz(note.midi_note, total_cents);
-                    let vel_norm = (note.velocity.min(127) as f32) / 127.0;
-
-                    if note.is_slide_note {
-                        let carrier_freq = ch_data
-                            .notes
-                            .iter()
-                            .find(|n| {
-                                !n.is_slide_note
-                                    && n.voice_color_group == note.voice_color_group
-                                    && n.start_tick <= note.start_tick
-                                    && n.start_tick + n.duration_ticks > note.start_tick
-                            })
-                            .map(|carrier| {
-                                midi_note_to_frequency_hz(
-                                    carrier.midi_note,
-                                    (channel.pitch_cents as f64)
-                                        + (carrier.fine_pitch_cents as f64),
-                                )
-                            })
-                            .unwrap_or(note_freq_hz);
-
-                        let pod = ScheduledAudioEventPod {
-                            sample_frame: tick_sample_frame,
-                            duration_frames,
-                            channel_index: channel.index,
-                            assigned_mixer_insert: channel.assigned_mixer_insert,
-                            voice_color_group: note.voice_color_group,
-                            kind: AudioScheduledEventKind::PitchGlide,
-                            waveform: channel.waveform,
-                            sample_slot,
-                            root_midi_note: channel.root_midi_note,
-                            midi_note: note.midi_note,
-                            velocity: note.velocity,
-                            start_freq_hz: carrier_freq,
-                            target_freq_hz: note_freq_hz,
-                            pan: (channel.pan + note.fine_pan).clamp(-1.0, 1.0),
-                            gain_linear: ch_gain * vel_norm,
-                        };
-                        let _ = event_producer.push(pod);
-                        scheduled_count += 1;
-                    } else {
-                        let pod = ScheduledAudioEventPod {
-                            sample_frame: tick_sample_frame,
-                            duration_frames,
-                            channel_index: channel.index,
-                            assigned_mixer_insert: channel.assigned_mixer_insert,
-                            voice_color_group: note.voice_color_group,
-                            kind: AudioScheduledEventKind::NoteOn,
-                            waveform: channel.waveform,
-                            sample_slot,
-                            root_midi_note: channel.root_midi_note,
-                            midi_note: note.midi_note,
-                            velocity: note.velocity,
-                            start_freq_hz: note_freq_hz,
-                            target_freq_hz: note_freq_hz,
-                            pan: (channel.pan + note.fine_pan).clamp(-1.0, 1.0),
-                            gain_linear: ch_gain * vel_norm,
-                        };
-                        let _ = event_producer.push(pod);
-                        scheduled_count += 1;
-                    }
-                }
+                self.next_unscheduled_tick += 1;
             }
-
-            self.next_unscheduled_tick += 1;
         }
 
         scheduled_count
     }
+}
+
+#[inline]
+fn schedule_channel_tick_events(
+    tick_sample_frame: u64,
+    local_tick: u32,
+    pattern: &QlPattern,
+    channels: &[QlChannel],
+    metrics: &TimingMetrics,
+    global_swing_ratio: f64,
+    any_solo: bool,
+    event_producer: &mut Producer<ScheduledAudioEventPod>,
+) -> usize {
+    let mut count = 0;
+    for channel in channels {
+        let audible = if any_solo {
+            channel.solo
+        } else {
+            !channel.muted
+        };
+        if !audible {
+            continue;
+        }
+
+        let Some(ch_data) = pattern.channel_data.get(&channel.id) else {
+            continue;
+        };
+
+        let ch_gain = db_to_linear(channel.volume_db);
+        let sample_slot = channel.sample_slot.unwrap_or_else(|| {
+            if channel.waveform == WaveformShape::SamplerPcm {
+                (channel.index as u8) % 4
+            } else {
+                0xFF
+            }
+        });
+
+        // 1. Step Sequencer Events
+        for (step_idx, step) in ch_data.steps.iter().enumerate() {
+            if !step.active {
+                continue;
+            }
+            let swung_tick = compute_swung_step_tick(
+                step_idx as u32,
+                metrics.ppq,
+                global_swing_ratio,
+                channel.swing_multiplier,
+                step.shift_ticks,
+            );
+            if swung_tick == local_tick {
+                let dur_ticks = ((metrics.ticks_per_sixteenth as f32) * step.gate_ratio)
+                    .round()
+                    .max(1.0) as f64;
+                let duration_frames =
+                    (dur_ticks * metrics.samples_per_tick).round().max(1.0) as u64;
+
+                let midi_note = (channel.root_midi_note as i16
+                    + channel.pitch_semitones as i16
+                    + step.pitch_offset_semitones as i16)
+                    .clamp(0, 127) as u8;
+                let total_cents =
+                    (channel.pitch_cents as f64) + (step.fine_pitch_cents as f64);
+                let freq_hz = midi_note_to_frequency_hz(midi_note, total_cents);
+                let vel_norm = (step.velocity.min(127) as f32) / 127.0;
+
+                let pod = ScheduledAudioEventPod {
+                    sample_frame: tick_sample_frame,
+                    duration_frames,
+                    channel_index: channel.index,
+                    assigned_mixer_insert: channel.assigned_mixer_insert,
+                    voice_color_group: 0,
+                    kind: AudioScheduledEventKind::NoteOn,
+                    waveform: channel.waveform,
+                    sample_slot,
+                    root_midi_note: channel.root_midi_note,
+                    midi_note,
+                    velocity: step.velocity,
+                    start_freq_hz: freq_hz,
+                    target_freq_hz: freq_hz,
+                    pan: (channel.pan + step.fine_pan).clamp(-1.0, 1.0),
+                    gain_linear: ch_gain * vel_norm,
+                };
+                let _ = event_producer.push(pod);
+                count += 1;
+            }
+        }
+
+        // 2. Piano Roll Normal & Slide Notes
+        for note in &ch_data.notes {
+            if note.start_tick != local_tick {
+                continue;
+            }
+
+            let duration_frames = ((note.duration_ticks as f64)
+                * metrics.samples_per_tick)
+                .round()
+                .max(1.0) as u64;
+            let total_cents = (channel.pitch_cents as f64) + (note.fine_pitch_cents as f64);
+            let note_freq_hz = midi_note_to_frequency_hz(note.midi_note, total_cents);
+            let vel_norm = (note.velocity.min(127) as f32) / 127.0;
+
+            if note.is_slide_note {
+                let carrier_freq = ch_data
+                    .notes
+                    .iter()
+                    .find(|n| {
+                        !n.is_slide_note
+                            && n.voice_color_group == note.voice_color_group
+                            && n.start_tick <= note.start_tick
+                            && n.start_tick + n.duration_ticks > note.start_tick
+                    })
+                    .map(|carrier| {
+                        midi_note_to_frequency_hz(
+                            carrier.midi_note,
+                            (channel.pitch_cents as f64)
+                                + (carrier.fine_pitch_cents as f64),
+                        )
+                    })
+                    .unwrap_or(note_freq_hz);
+
+                let pod = ScheduledAudioEventPod {
+                    sample_frame: tick_sample_frame,
+                    duration_frames,
+                    channel_index: channel.index,
+                    assigned_mixer_insert: channel.assigned_mixer_insert,
+                    voice_color_group: note.voice_color_group,
+                    kind: AudioScheduledEventKind::PitchGlide,
+                    waveform: channel.waveform,
+                    sample_slot,
+                    root_midi_note: channel.root_midi_note,
+                    midi_note: note.midi_note,
+                    velocity: note.velocity,
+                    start_freq_hz: carrier_freq,
+                    target_freq_hz: note_freq_hz,
+                    pan: (channel.pan + note.fine_pan).clamp(-1.0, 1.0),
+                    gain_linear: ch_gain * vel_norm,
+                };
+                let _ = event_producer.push(pod);
+                count += 1;
+            } else {
+                let pod = ScheduledAudioEventPod {
+                    sample_frame: tick_sample_frame,
+                    duration_frames,
+                    channel_index: channel.index,
+                    assigned_mixer_insert: channel.assigned_mixer_insert,
+                    voice_color_group: note.voice_color_group,
+                    kind: AudioScheduledEventKind::NoteOn,
+                    waveform: channel.waveform,
+                    sample_slot,
+                    root_midi_note: channel.root_midi_note,
+                    midi_note: note.midi_note,
+                    velocity: note.velocity,
+                    start_freq_hz: note_freq_hz,
+                    target_freq_hz: note_freq_hz,
+                    pan: (channel.pan + note.fine_pan).clamp(-1.0, 1.0),
+                    gain_linear: ch_gain * vel_norm,
+                };
+                let _ = event_producer.push(pod);
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 /// Fixed-size synthesis & PCM sampler voice slot (stack/struct-allocated; zero heap allocations).
@@ -478,6 +600,9 @@ pub struct RealTimeAudioEngine {
     pub command_consumer: Consumer<RealTimeCommand>,
     pub sample_consumer: Option<Consumer<(u8, SharedStereoPcm)>>,
     pub sample_gc_producer: Option<Producer<SharedStereoPcm>>,
+    pub midi_consumer: Option<Consumer<ScheduledAudioEventPod>>,
+    pub midi_command_consumer: Option<Consumer<RealTimeCommand>>,
+    pub monitor_consumer: Option<Consumer<f32>>,
 }
 
 impl RealTimeAudioEngine {
@@ -510,6 +635,9 @@ impl RealTimeAudioEngine {
             command_consumer,
             sample_consumer: None,
             sample_gc_producer: None,
+            midi_consumer: None,
+            midi_command_consumer: None,
+            monitor_consumer: None,
         }
     }
 
@@ -521,6 +649,103 @@ impl RealTimeAudioEngine {
         self.sample_consumer = Some(sample_consumer);
         self.sample_gc_producer = Some(sample_gc_producer);
         self
+    }
+
+    pub fn with_midi(
+        mut self,
+        midi_consumer: Consumer<ScheduledAudioEventPod>,
+        midi_command_consumer: Consumer<RealTimeCommand>,
+    ) -> Self {
+        self.midi_consumer = Some(midi_consumer);
+        self.midi_command_consumer = Some(midi_command_consumer);
+        self
+    }
+
+    pub fn with_live_monitor(mut self, monitor_consumer: Consumer<f32>) -> Self {
+        self.monitor_consumer = Some(monitor_consumer);
+        self
+    }
+
+    #[inline(always)]
+    fn handle_command(&mut self, cmd: RealTimeCommand) {
+        match cmd {
+            RealTimeCommand::Play => {
+                self.is_playing = true;
+            }
+            RealTimeCommand::Pause => {
+                self.is_playing = false;
+            }
+            RealTimeCommand::Stop => {
+                self.is_playing = false;
+                self.current_sample_frame = 0;
+                self.pending_event = None;
+                while self.event_consumer.pop().is_ok() {}
+                for v in &mut self.voices {
+                    v.active = false;
+                }
+            }
+            RealTimeCommand::SetInsertParams {
+                insert_index,
+                pan,
+                stereo_separation,
+                fader_gain_linear,
+                muted,
+                eq_coeffs,
+                eq_enabled,
+            } => {
+                let idx = insert_index as usize;
+                if idx < MAX_MIXER_INSERTS {
+                    let strip = &mut self.mixer_graph.strips[idx];
+                    strip.pan = pan;
+                    strip.stereo_separation = stereo_separation;
+                    strip.fader_gain_linear = fader_gain_linear;
+                    strip.muted = muted;
+                    strip.eq_coeffs = eq_coeffs;
+                    strip.eq_enabled = eq_enabled;
+                }
+            }
+            RealTimeCommand::UpdateRoutingSchedule {
+                topological_order,
+                node_count,
+                sends,
+                send_count,
+            } => {
+                self.mixer_graph.topological_order = topological_order;
+                self.mixer_graph.node_count = node_count;
+                self.mixer_graph.sends = sends;
+                self.mixer_graph.send_count = send_count;
+                self.mixer_graph.rebuild_fast_send_lookup();
+            }
+            RealTimeCommand::SetInsertPlugin {
+                insert_index,
+                slot_index,
+                plugin_tag,
+                params,
+                enabled,
+            } => {
+                let ins_idx = insert_index as usize;
+                let sl_idx = (slot_index as usize).min(3);
+                if ins_idx < MAX_MIXER_INSERTS {
+                    let slot = &mut self.mixer_graph.strips[ins_idx].plugin_slots[sl_idx];
+                    slot.enabled = enabled;
+                    slot.plugin_tag = plugin_tag;
+                    slot.params = params;
+                }
+            }
+            RealTimeCommand::SetPluginParam {
+                insert_index,
+                slot_index,
+                param_index,
+                value,
+            } => {
+                let ins_idx = insert_index as usize;
+                let sl_idx = (slot_index as usize).min(3);
+                let p_idx = (param_index as usize).min(3);
+                if ins_idx < MAX_MIXER_INSERTS {
+                    self.mixer_graph.strips[ins_idx].plugin_slots[sl_idx].params[p_idx] = value;
+                }
+            }
+        }
     }
 
     #[inline(always)]
@@ -540,54 +765,24 @@ impl RealTimeAudioEngine {
         }
 
         while let Ok(cmd) = self.command_consumer.pop() {
-            match cmd {
-                RealTimeCommand::Play => {
-                    self.is_playing = true;
+            self.handle_command(cmd);
+        }
+
+        let mut cmd_batch: [Option<RealTimeCommand>; 16] = std::array::from_fn(|_| None);
+        let mut cmd_count = 0;
+        if let Some(ref mut midi_cmds) = self.midi_command_consumer {
+            while cmd_count < 16 {
+                if let Ok(cmd) = midi_cmds.pop() {
+                    cmd_batch[cmd_count] = Some(cmd);
+                    cmd_count += 1;
+                } else {
+                    break;
                 }
-                RealTimeCommand::Pause => {
-                    self.is_playing = false;
-                }
-                RealTimeCommand::Stop => {
-                    self.is_playing = false;
-                    self.current_sample_frame = 0;
-                    self.pending_event = None;
-                    while self.event_consumer.pop().is_ok() {}
-                    for v in &mut self.voices {
-                        v.active = false;
-                    }
-                }
-                RealTimeCommand::SetInsertParams {
-                    insert_index,
-                    pan,
-                    stereo_separation,
-                    fader_gain_linear,
-                    muted,
-                    eq_coeffs,
-                    eq_enabled,
-                } => {
-                    let idx = insert_index as usize;
-                    if idx < MAX_MIXER_INSERTS {
-                        let strip = &mut self.mixer_graph.strips[idx];
-                        strip.pan = pan;
-                        strip.stereo_separation = stereo_separation;
-                        strip.fader_gain_linear = fader_gain_linear;
-                        strip.muted = muted;
-                        strip.eq_coeffs = eq_coeffs;
-                        strip.eq_enabled = eq_enabled;
-                    }
-                }
-                RealTimeCommand::UpdateRoutingSchedule {
-                    topological_order,
-                    node_count,
-                    sends,
-                    send_count,
-                } => {
-                    self.mixer_graph.topological_order = topological_order;
-                    self.mixer_graph.node_count = node_count;
-                    self.mixer_graph.sends = sends;
-                    self.mixer_graph.send_count = send_count;
-                    self.mixer_graph.rebuild_fast_send_lookup();
-                }
+            }
+        }
+        for i in 0..cmd_count {
+            if let Some(cmd) = cmd_batch[i].take() {
+                self.handle_command(cmd);
             }
         }
     }
@@ -678,38 +873,80 @@ impl RealTimeAudioEngine {
     pub fn process_interleaved_f32(&mut self, output: &mut [f32], channels: usize) {
         self.drain_control_and_sample_commands();
 
-        if !self.is_playing || channels == 0 {
+        if channels == 0 {
+            output.fill(0.0);
+            return;
+        }
+
+        // 1. Drain incoming live hardware MIDI events immediately
+        let mut ev_batch: [Option<ScheduledAudioEventPod>; 32] = std::array::from_fn(|_| None);
+        let mut ev_count = 0;
+        if let Some(ref mut midi_evs) = self.midi_consumer {
+            while ev_count < 32 {
+                if let Ok(ev) = midi_evs.pop() {
+                    ev_batch[ev_count] = Some(ev);
+                    ev_count += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        for i in 0..ev_count {
+            if let Some(ev) = ev_batch[i].take() {
+                self.dispatch_event(ev);
+            }
+        }
+
+        // Check whether active voices or live monitor samples require processing
+        let has_active_voices = self.voices.iter().any(|v| v.active);
+        let has_monitor = self.monitor_consumer.as_ref().map_or(false, |m| !m.is_empty());
+
+        if !self.is_playing && !has_active_voices && !has_monitor {
             output.fill(0.0);
             return;
         }
 
         for frame in output.chunks_exact_mut(channels) {
-            // 1. Trigger all events scheduled at or before `current_sample_frame`
-            loop {
-                if let Some(ev) = self.pending_event {
-                    if ev.sample_frame <= self.current_sample_frame {
-                        self.pending_event = None;
-                        self.dispatch_event(ev);
-                        continue;
-                    } else {
-                        break;
-                    }
-                }
-                match self.event_consumer.pop() {
-                    Ok(ev) => {
+            // 2. If playing, trigger all lookahead song events scheduled at or before current_sample_frame
+            if self.is_playing {
+                loop {
+                    if let Some(ev) = self.pending_event {
                         if ev.sample_frame <= self.current_sample_frame {
+                            self.pending_event = None;
                             self.dispatch_event(ev);
+                            continue;
                         } else {
-                            self.pending_event = Some(ev);
                             break;
                         }
                     }
-                    Err(_) => break,
+                    match self.event_consumer.pop() {
+                        Ok(ev) => {
+                            if ev.sample_frame <= self.current_sample_frame {
+                                self.dispatch_event(ev);
+                            } else {
+                                self.pending_event = Some(ev);
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
             }
 
-            // 2. Render active voices into their assigned Mixer Insert buses
+            // 3. Clear mixer buses for this frame
             self.mixer_graph.clear_buses();
+
+            // 4. Live vocal/microphone monitoring input into Insert 1
+            if let Some(ref mut mon) = self.monitor_consumer {
+                if let Ok(in_sample) = mon.pop() {
+                    let mic_insert = 1;
+                    self.mixer_graph.buses_lr[mic_insert][0] += in_sample;
+                    self.mixer_graph.buses_lr[mic_insert][1] += in_sample;
+                    self.mixer_graph.bus_active[mic_insert] = true;
+                }
+            }
+
+            // 5. Render active voices into their assigned Mixer Insert buses
             for voice in &mut self.voices {
                 if !voice.active {
                     continue;
@@ -730,7 +967,7 @@ impl RealTimeAudioEngine {
                 self.mixer_graph.bus_active[insert_idx] = true;
             }
 
-            // 3. Evaluate active Mixer inserts in topological order
+            // 6. Evaluate active Mixer inserts in topological order
             let (master_l, master_r) = self.mixer_graph.process_frame();
 
             frame[0] = master_l;
@@ -741,7 +978,9 @@ impl RealTimeAudioEngine {
                 }
             }
 
-            self.current_sample_frame += 1;
+            if self.is_playing {
+                self.current_sample_frame += 1;
+            }
         }
     }
 }

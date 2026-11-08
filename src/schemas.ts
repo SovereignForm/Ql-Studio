@@ -217,4 +217,124 @@ export interface QlProject {
   readonly channels: readonly QlChannel[];
   readonly patterns: readonly QlPattern[];
   readonly mixer: QlMixerState;
+  readonly playlist?: QlPlaylistState;
+}
+
+export type PlayMode = "pattern" | "song";
+
+export interface QlPlaylistTrack {
+  readonly index: number;
+  readonly name: string;
+  readonly colorHex: `#${string}`;
+  readonly heightPx: number;
+  readonly muted: boolean;
+  readonly solo: boolean;
+}
+
+export interface QlPlaylistClip {
+  readonly id: string;
+  readonly trackIndex: number;
+  readonly startTick: number;
+  readonly lengthTicks: number;
+  readonly offsetTicks?: number;
+  readonly kind: "pattern" | "audio" | "automation";
+  readonly referenceId: string;
+  readonly name: string;
+  readonly colorHex: `#${string}`;
+  readonly muted?: boolean;
+}
+
+export interface QlAutomationPoint {
+  readonly tick: number;
+  readonly value: number; // 0.0 .. 1.0
+  readonly tension: number; // -1.0 .. +1.0
+}
+
+export interface QlAutomationClip {
+  readonly id: string;
+  readonly name: string;
+  readonly targetType:
+    | "channel_volume"
+    | "channel_pan"
+    | "channel_cutoff"
+    | "mixer_fader"
+    | "mixer_pan"
+    | "plugin_param";
+  readonly targetId: string;
+  readonly targetParamIndex?: number;
+  readonly points: readonly QlAutomationPoint[];
+  readonly lengthTicks: number;
+  readonly colorHex: `#${string}`;
+}
+
+export interface QlPlaylistState {
+  readonly tracks: readonly QlPlaylistTrack[];
+  readonly clips: readonly QlPlaylistClip[];
+  readonly automationClips: readonly QlAutomationClip[];
+  readonly loopStartTick?: number | null;
+  readonly loopEndTick?: number | null;
+  readonly playMode: PlayMode;
+}
+
+export interface PluginParamInfo {
+  readonly id: number;
+  readonly name: string;
+  readonly value: number;
+  readonly minValue: number;
+  readonly maxValue: number;
+  readonly defaultValue: number;
+}
+
+export interface PluginDescriptor {
+  readonly id: string;
+  readonly path: string;
+  readonly name: string;
+  readonly vendor: string;
+  readonly version: string;
+  readonly format: "vst3" | "clap" | "builtin";
+  readonly category: "instrument" | "effect" | "analyzer";
+  readonly audioInputs: number;
+  readonly audioOutputs: number;
+  readonly hasEditor: boolean;
+  readonly parameters: readonly PluginParamInfo[];
+}
+
+export interface PluginInstanceSummary {
+  readonly instanceId: string;
+  readonly descriptor: PluginDescriptor;
+  readonly targetKind: "mixer_slot" | "channel";
+  readonly targetIndex: number;
+  readonly slotIndex?: number;
+  readonly parameters: readonly PluginParamInfo[];
+  readonly active: boolean;
+}
+
+export interface AudioInputDeviceInfo {
+  readonly name: string;
+  readonly isDefault: boolean;
+}
+
+export interface RecordedAudioSummary {
+  readonly filePath: string;
+  readonly fileName: string;
+  readonly sampleRate: number;
+  readonly durationSeconds: number;
+  readonly frameCount: number;
+  readonly startTick: number;
+  readonly trackIndex: number;
+}
+
+export type MidiControllerProfile = "generic" | "akai_fire" | "novation_launchkey";
+
+export interface MidiDeviceInfo {
+  readonly index: number;
+  readonly name: string;
+  readonly isConnected: boolean;
+}
+
+export interface MidiStatusSnapshot {
+  readonly connectedDevice: string | null;
+  readonly activeProfile: MidiControllerProfile;
+  readonly lastActivityTimestampMs: number;
+  readonly lastNotePlayed: number | null;
 }

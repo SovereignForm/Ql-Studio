@@ -5,6 +5,7 @@ import {
   Circle,
   Clock3,
   Columns3,
+  Cpu,
   FileAudio,
   FileDown,
   FolderOpen,
@@ -100,11 +101,14 @@ export interface ToolbarProps {
   readonly onToggleFullscreen: () => void;
   readonly onOpenAudioSettings: () => void;
   readonly onOpenAboutModal: () => void;
+  readonly onOpenPluginManager?: () => void;
+  readonly midiConnectedDevice?: string | null;
+  readonly midiActivityActive?: boolean;
 }
 
 const MENUS = ["File", "Edit", "Add", "Patterns", "View", "Options", "Tools", "Help"] as const;
 
-export const Toolbar: React.FC<ToolbarProps> = (p) => {
+export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
   const [openMenu, setOpenMenu] = useState<(typeof MENUS)[number] | null>(null);
   const [editingBpm, setEditingBpm] = useState(false);
   const [bpmDraft, setBpmDraft] = useState("");
@@ -156,11 +160,25 @@ export const Toolbar: React.FC<ToolbarProps> = (p) => {
       }
       ctx.stroke();
       ctx.shadowBlur = 0;
-      if (playing) phase += 0.35;
-      raf = requestAnimationFrame(draw);
+      if (playing || amp > 0.001) {
+        if (playing) phase += 0.35;
+        raf = requestAnimationFrame(draw);
+      } else {
+        raf = 0;
+      }
     };
-    raf = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(raf);
+    if (levelRef.current.playing || Math.max(levelRef.current.l, levelRef.current.r) > 0.001) {
+      raf = requestAnimationFrame(draw);
+    }
+    const interval = setInterval(() => {
+      if (!raf && (levelRef.current.playing || Math.max(levelRef.current.l, levelRef.current.r) > 0.001)) {
+        raf = requestAnimationFrame(draw);
+      }
+    }, 100);
+    return () => {
+      clearInterval(interval);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, []);
 
   const ticksPerBeat = p.ppq;
@@ -207,6 +225,7 @@ export const Toolbar: React.FC<ToolbarProps> = (p) => {
       { label: "Clear Active Pattern", action: p.onClearPattern },
     ],
     Add: [
+      { label: "Manage VST3 & CLAP Plugins…", action: p.onOpenPluginManager, hint: "F8" },
       { label: "Add Audio Sampler Channel (.wav)", action: () => p.onAddGeneratorChannel("sampler") },
       { label: "Add Subtractive Synth Channel (PolyBLEP)", action: () => p.onAddGeneratorChannel("synth") },
       { label: "Add Sub-Bass / Automation Track", action: () => p.onAddGeneratorChannel("automation"), divider: true },
@@ -247,7 +266,7 @@ export const Toolbar: React.FC<ToolbarProps> = (p) => {
   };
 
   return (
-    <header className="shrink-0 bg-fl-panel border-b border-black/80 fl-matte">
+    <header className="shrink-0 bg-fl-panel border-b border-black/80">
       {/* Menu strip */}
       <div className="h-6 flex items-center gap-0.5 px-2 border-b border-black/60 bg-[#1f2328] relative">
         <img src="/logo.svg" alt="QL Studio Logo" className="w-4 h-4 mr-1.5 drop-shadow-[0_0_6px_#ff8500]" />
@@ -295,11 +314,48 @@ export const Toolbar: React.FC<ToolbarProps> = (p) => {
         <div className="ml-auto flex items-center gap-2">
           <button
             type="button"
+            onClick={p.onOpenPluginManager}
+            title="Open VST3 / CLAP Plugin Manager (F8)"
+            className="px-2 h-4.5 rounded bg-fl-deep fl-inset text-[10px] font-mono text-fl-amber hover:text-white cursor-pointer flex items-center gap-1 border border-black/40"
+          >
+            <Cpu size={10} /> PLUGINS
+          </button>
+          <button
+            type="button"
             onClick={p.onOpenAudioSettings}
-            title="Configure Hardware Buffer Size (256 / 512 / 1024 / 2048)"
+            title="Configure Hardware Audio Buffer & Input / Output Devices"
             className="px-2 h-4.5 rounded bg-fl-deep fl-inset text-[10px] font-mono text-fl-led hover:text-fl-amber cursor-pointer flex items-center gap-1"
           >
             <Settings size={10} /> {p.bufferSizeFrames} smp
+          </button>
+          <button
+            type="button"
+            onClick={p.onOpenAudioSettings}
+            title={
+              p.midiConnectedDevice
+                ? `Hardware MIDI Controller: ${p.midiConnectedDevice} (Active)`
+                : "Hardware MIDI: Click to connect physical USB MIDI keyboard or pad controller"
+            }
+            className="px-2 h-4.5 rounded bg-fl-deep fl-inset text-[10px] font-mono cursor-pointer flex items-center gap-1.5 hover:bg-white/5 transition-colors"
+          >
+            <span
+              className="w-1.5 h-1.5 rounded-full shrink-0"
+              style={{
+                background: p.midiActivityActive
+                  ? "#ffb300"
+                  : p.midiConnectedDevice
+                    ? "#00e676"
+                    : "#555",
+                boxShadow: p.midiActivityActive
+                  ? "0 0 6px #ffb300"
+                  : p.midiConnectedDevice
+                    ? "0 0 4px #00e676"
+                    : "none",
+              }}
+            />
+            <span className={p.midiConnectedDevice ? "text-fl-amber" : "text-fl-dim"}>
+              {p.midiConnectedDevice ? p.midiConnectedDevice : "NO MIDI"}
+            </span>
           </button>
           <span className="text-[10px] text-fl-dim truncate max-w-[260px]">
             {p.projectTitle} · {p.nativeRuntime ? "Tauri Native DSP" : "WebAudio Preview"}
@@ -606,4 +662,5 @@ export const Toolbar: React.FC<ToolbarProps> = (p) => {
       </div>
     </header>
   );
-};
+});
+Toolbar.displayName = "Toolbar";

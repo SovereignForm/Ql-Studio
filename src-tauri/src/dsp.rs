@@ -306,6 +306,69 @@ pub fn verify_acyclic_routing_graph(mixer: &QlMixerState) -> DagVerificationRepo
     }
 }
 
+/// Fixed-capacity plugin effect slot on a mixer insert strip (zero allocation, stack-resident).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct InsertPluginSlot {
+    pub enabled: bool,
+    pub plugin_tag: u8, // 0 = none, 1 = tape, 2 = limiter, 3 = imager, 4 = generic
+    pub params: [f32; 4],
+}
+
+impl InsertPluginSlot {
+    #[inline(always)]
+    pub fn process_stereo(&mut self, left: &mut f32, right: &mut f32) {
+        if !self.enabled {
+            return;
+        }
+        match self.plugin_tag {
+            1 => {
+                // Tape saturation
+                let drive_gain = 10.0_f32.powf(self.params[0] / 20.0);
+                let warmth = self.params[1];
+                let mix = self.params[3].clamp(0.0, 1.0);
+                let in_l = *left;
+                let in_r = *right;
+                let sat_l = (in_l * drive_gain).tanh() + (warmth * 0.15 * in_l * in_l.abs());
+                let sat_r = (in_r * drive_gain).tanh() + (warmth * 0.15 * in_r * in_r.abs());
+                *left = in_l * (1.0 - mix) + sat_l * mix;
+                *right = in_r * (1.0 - mix) + sat_r * mix;
+            }
+            2 => {
+                // Precision Peak Limiter
+                let thresh_lin = 10.0_f32.powf(self.params[0] / 20.0);
+                let ceil_lin = 10.0_f32.powf(self.params[1] / 20.0);
+                let peak = left.abs().max(right.abs());
+                if peak > thresh_lin {
+                    let over = peak / thresh_lin;
+                    let gr = (1.0 / over).clamp(0.05, 1.0);
+                    *left = (*left * gr).clamp(-ceil_lin, ceil_lin);
+                    *right = (*right * gr).clamp(-ceil_lin, ceil_lin);
+                }
+            }
+            3 => {
+                // Stereo Spatial Imager
+                let width_mult = (self.params[0] / 100.0).clamp(0.0, 2.0);
+                let mid = (*left + *right) * 0.5;
+                let side = (*right - *left) * 0.5 * width_mult;
+                *left = mid - side;
+                *right = mid + side;
+            }
+            4 => {
+                // Generic VST3/CLAP gain & mix
+                let mix = self.params[0].clamp(0.0, 1.0);
+                let in_gain = 10.0_f32.powf(self.params[1] / 20.0);
+                let out_gain = 10.0_f32.powf(self.params[2] / 20.0);
+                let proc_l = (*left * in_gain).clamp(-2.0, 2.0) * out_gain;
+                let proc_r = (*right * in_gain).clamp(-2.0, 2.0) * out_gain;
+                *left = *left * (1.0 - mix) + proc_l * mix;
+                *right = *right * (1.0 - mix) + proc_r * mix;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Fixed-capacity, zero-allocation mixer graph state owned exclusively by the real-time audio callback.
 #[derive(Clone, Copy)]
 pub struct RealTimeInsertStrip {
@@ -317,6 +380,7 @@ pub struct RealTimeInsertStrip {
     pub eq_coeffs: RbjBiquadCoeffs,
     pub eq_state: StereoBiquadState,
     pub direct_master_gain: f32,
+    pub plugin_slots: [InsertPluginSlot; 4],
 }
 
 impl Default for RealTimeInsertStrip {
@@ -330,6 +394,7 @@ impl Default for RealTimeInsertStrip {
             eq_coeffs: RbjBiquadCoeffs::default(),
             eq_state: StereoBiquadState::default(),
             direct_master_gain: 1.0,
+            plugin_slots: [InsertPluginSlot::default(); 4],
         }
     }
 }
@@ -440,6 +505,10 @@ impl PreallocatedMixerGraph {
                 let (el, er) = strip.eq_state.process_stereo(l, r, &strip.eq_coeffs);
                 l = el;
                 r = er;
+            }
+
+            for slot in &mut strip.plugin_slots {
+                slot.process_stereo(&mut l, &mut r);
             }
 
             let (pl, pr) =
