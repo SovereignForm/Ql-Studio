@@ -667,10 +667,48 @@ export class QlNativeEngineClient {
         frameCount: 21600,
       };
     }
-    return invoke<LoadedSampleSummary>("load_sample_file", {
+    const rawRes = await invoke<any>("load_sample_file", {
       channelId,
       path,
     });
+    const parsedSlot =
+      typeof rawRes.slotIndex === "number"
+        ? rawRes.slotIndex
+        : typeof rawRes.channelId === "number"
+          ? rawRes.channelId
+          : parseInt(channelId.replace(/\D/g, ""), 10) || 0;
+    const sampleName =
+      rawRes.name ||
+      rawRes.sampleName ||
+      path.split(/[\\/]/).pop()?.replace(/\.wav$/i, "") ||
+      "Sample";
+    const durationSec =
+      typeof rawRes.durationSeconds === "number"
+        ? rawRes.durationSeconds
+        : typeof rawRes.durationMs === "number"
+          ? rawRes.durationMs / 1000
+          : 0.5;
+    const engineSr =
+      typeof rawRes.engineSampleRate === "number"
+        ? rawRes.engineSampleRate
+        : typeof rawRes.sampleRate === "number"
+          ? rawRes.sampleRate
+          : 48000;
+    const origSr =
+      typeof rawRes.originalSampleRate === "number"
+        ? rawRes.originalSampleRate
+        : engineSr;
+
+    return {
+      slotIndex: parsedSlot,
+      name: sampleName,
+      sourcePath: rawRes.sourcePath || path,
+      originalSampleRate: origSr,
+      engineSampleRate: engineSr,
+      channels: rawRes.channels || 2,
+      durationSeconds: durationSec,
+      frameCount: rawRes.frameCount || 24000,
+    };
   }
 
   public async openAndLoadWavDialog(
@@ -679,38 +717,48 @@ export class QlNativeEngineClient {
     if (!this.isNativeRuntime) {
       return null;
     }
-    const selected = await open({
-      multiple: false,
-      title: "Load Audio Sample (.wav)",
-      filters: [
-        {
-          name: "WAV Audio Sample",
-          extensions: ["wav", "WAV"],
-        },
-      ],
-    });
-    if (!selected || typeof selected !== "string") {
+    try {
+      const selected = await open({
+        multiple: false,
+        title: "Load Audio Sample (.wav)",
+        filters: [
+          {
+            name: "WAV Audio Sample",
+            extensions: ["wav", "WAV"],
+          },
+        ],
+      });
+      if (!selected || typeof selected !== "string") {
+        return null;
+      }
+      return await this.loadSampleFile(channelId, selected);
+    } catch (err) {
+      console.warn("WAV open dialog dismissed or failed:", err);
       return null;
     }
-    return this.loadSampleFile(channelId, selected);
   }
 
   public async exportWavDialog(bars = 2): Promise<string | null> {
     if (!this.isNativeRuntime) {
       return "/tmp/ql_studio_master_export.wav (Browser Preview)";
     }
-    const dest = await save({
-      title: "Export Pattern Mixdown as WAV",
-      defaultPath: "ql_studio_mixdown.wav",
-      filters: [
-        {
-          name: "WAV Audio (16-bit PCM Stereo)",
-          extensions: ["wav"],
-        },
-      ],
-    });
-    if (!dest) return null;
-    return invoke<string>("export_wav_file", { path: dest, bars });
+    try {
+      const dest = await save({
+        title: "Export Pattern Mixdown as WAV",
+        defaultPath: "ql_studio_mixdown.wav",
+        filters: [
+          {
+            name: "WAV Audio (16-bit PCM Stereo)",
+            extensions: ["wav"],
+          },
+        ],
+      });
+      if (!dest) return null;
+      return await invoke<string>("export_wav_file", { path: dest, bars });
+    } catch (err) {
+      console.warn("Export WAV dialog dismissed or failed:", err);
+      return null;
+    }
   }
 
   public async importFlpFile(path: string): Promise<QlProjectPayload> {
@@ -719,20 +767,25 @@ export class QlNativeEngineClient {
 
   public async openAndImportFlpDialog(): Promise<QlProjectPayload | null> {
     if (this.isNativeRuntime) {
-      const selected = await open({
-        multiple: false,
-        title: "Open Audio Project (.flp)",
-        filters: [
-          {
-            name: "Supported Audio Project",
-            extensions: ["flp"],
-          },
-        ],
-      });
-      if (!selected || typeof selected !== "string") {
+      try {
+        const selected = await open({
+          multiple: false,
+          title: "Open Audio Project (.flp)",
+          filters: [
+            {
+              name: "Supported Audio Project",
+              extensions: ["flp"],
+            },
+          ],
+        });
+        if (!selected || typeof selected !== "string") {
+          return null;
+        }
+        return await this.importFlpFile(selected);
+      } catch (err) {
+        console.warn("FLP open dialog dismissed or failed:", err);
         return null;
       }
-      return this.importFlpFile(selected);
     }
     return null;
   }
@@ -743,10 +796,14 @@ export class QlNativeEngineClient {
         return await invoke<boolean>("toggle_fullscreen");
       } catch (err) {
         console.warn("Native toggle_fullscreen invoke failed, falling back to window API", err);
-        const win = getCurrentWindow();
-        const current = await win.isFullscreen();
-        await win.setFullscreen(!current);
-        return !current;
+        try {
+          const win = getCurrentWindow();
+          const current = await win.isFullscreen();
+          await win.setFullscreen(!current);
+          return !current;
+        } catch {
+          return false;
+        }
       }
     }
     if (typeof document !== "undefined") {
@@ -768,26 +825,36 @@ export class QlNativeEngineClient {
         return;
       } catch (err) {
         console.warn("Native toggle_maximize invoke failed, falling back to window API", err);
-        const win = getCurrentWindow();
-        const maxed = await win.isMaximized();
-        if (maxed) {
-          await win.unmaximize();
-        } else {
-          await win.maximize();
-        }
+        try {
+          const win = getCurrentWindow();
+          const maxed = await win.isMaximized();
+          if (maxed) {
+            await win.unmaximize();
+          } else {
+            await win.maximize();
+          }
+        } catch {}
       }
     }
   }
 
   public async minimizeWindow(): Promise<void> {
     if (this.isNativeRuntime) {
-      await getCurrentWindow().minimize();
+      try {
+        await getCurrentWindow().minimize();
+      } catch (err) {
+        console.warn("minimizeWindow failed:", err);
+      }
     }
   }
 
   public async closeWindow(): Promise<void> {
     if (this.isNativeRuntime) {
-      await getCurrentWindow().close();
+      try {
+        await getCurrentWindow().close();
+      } catch (err) {
+        console.warn("closeWindow failed:", err);
+      }
     }
   }
 

@@ -453,11 +453,19 @@ pub fn import_flp_file(
 /// using 4-point Hermite cubic interpolation, and transfers the buffer lock-free to the voice engine.
 #[tauri::command]
 pub fn load_sample_file(
-    channel_id: u32,
+    channel_id: serde_json::Value,
     path: String,
     state: State<'_, QlEngineController>,
 ) -> Result<LoadedSampleSummary, String> {
-    let slot = (channel_id as usize).min(MAX_SAMPLE_SLOTS - 1) as u8;
+    let slot_num: usize = match channel_id {
+        serde_json::Value::Number(ref n) => n.as_u64().unwrap_or(0) as usize,
+        serde_json::Value::String(ref s) => {
+            let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+            digits.parse::<usize>().unwrap_or(0)
+        }
+        _ => 0,
+    };
+    let slot = (slot_num).min(MAX_SAMPLE_SLOTS - 1) as u8;
     let wav_path = Path::new(&path);
 
     let target_sr = {
@@ -465,13 +473,14 @@ pub fn load_sample_file(
         guard.scheduler.metrics.sample_rate
     };
 
-    let (pcm, _src_sr) = load_wav_file_resampled(wav_path, target_sr)?;
+    let (pcm, src_sr) = load_wav_file_resampled(wav_path, target_sr)?;
     let frame_count = pcm.len();
     let duration_ms = ((frame_count as f64) / (target_sr as f64)) * 1000.0;
+    let duration_seconds = duration_ms / 1000.0;
     let sample_name = wav_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| format!("Sample {channel_id}"));
+        .unwrap_or_else(|| format!("Sample {slot}"));
 
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.loaded_samples[slot as usize] = Some(pcm.clone());
@@ -480,7 +489,7 @@ pub fn load_sample_file(
     if let Some(ch) = guard
         .channels
         .iter_mut()
-        .find(|c| c.index as u32 == channel_id)
+        .find(|c| c.index as u8 == slot || c.id.ends_with(&format!("_{slot}")))
     {
         ch.name = sample_name.clone();
         ch.sample_slot = Some(slot);
@@ -488,12 +497,18 @@ pub fn load_sample_file(
     }
 
     Ok(LoadedSampleSummary {
-        channel_id,
-        sample_name,
+        channel_id: slot as u32,
+        sample_name: sample_name.clone(),
         source_path: path,
         frame_count,
         sample_rate: target_sr,
         duration_ms,
+        slot_index: slot,
+        name: sample_name,
+        original_sample_rate: src_sr,
+        engine_sample_rate: target_sr,
+        channels: 2,
+        duration_seconds,
     })
 }
 

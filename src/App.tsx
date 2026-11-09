@@ -333,6 +333,112 @@ interface HistorySnapshot {
   readonly activePatternId: string;
 }
 
+/* Interactive Piano Roll Component (F7) */
+const PIANO_NOTES = [
+  { midi: 72, label: "C6", black: false },
+  { midi: 71, label: "B5", black: false },
+  { midi: 70, label: "A#5", black: true },
+  { midi: 69, label: "A5", black: false },
+  { midi: 68, label: "G#5", black: true },
+  { midi: 67, label: "G5", black: false },
+  { midi: 66, label: "F#5", black: true },
+  { midi: 65, label: "F5", black: false },
+  { midi: 64, label: "E5", black: false },
+  { midi: 63, label: "D#5", black: true },
+  { midi: 62, label: "D5", black: false },
+  { midi: 61, label: "C#5", black: true },
+  { midi: 60, label: "C5 (Root)", black: false },
+  { midi: 58, label: "A#4", black: true },
+  { midi: 57, label: "A4", black: false },
+  { midi: 55, label: "G4", black: false },
+  { midi: 53, label: "F4", black: false },
+  { midi: 52, label: "E4", black: false },
+  { midi: 50, label: "D4", black: false },
+  { midi: 48, label: "C4", black: false },
+];
+
+const PianoRollEditor: React.FC<{
+  readonly channel: QlChannel;
+  readonly notes: readonly QlPianoRollNote[];
+  readonly stepCount: number;
+  readonly activeStep: number;
+  readonly isPlaying: boolean;
+  readonly ppq: number;
+  readonly onToggleNote: (stepIdx: number, midiNote: number, isSlide: boolean) => void;
+  readonly onAuditionNote?: (midiNote: number) => void;
+}> = React.memo(({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote, onAuditionNote }) => {
+  const [slideMode, setSlideMode] = useState(false);
+  const ticksPerStep = ppq / 4;
+
+  return (
+    <div className="flex flex-col h-full bg-[#191d22]">
+      <div className="h-7 px-2 flex items-center gap-3 border-b border-black/70 bg-[#22272e] text-[10px]">
+        <button
+          type="button"
+          onClick={() => setSlideMode((s) => !s)}
+          className={`px-2 py-0.5 rounded font-semibold cursor-pointer fl-bevel ${
+            slideMode ? "bg-fl-orange text-black" : "bg-fl-raised text-fl-dim hover:text-fl-text"
+          }`}
+        >
+          ▲ Slide Note Mode: {slideMode ? "ON" : "OFF"}
+        </button>
+        <span className="text-fl-dim">
+          Click piano keys or grid cells to place & audition notes · Active notes trigger sample-accurate voices in the engine
+        </span>
+      </div>
+      <div className="flex-1 overflow-auto fl-scroll">
+        <div className="inline-flex flex-col min-w-full">
+          {PIANO_NOTES.map((row) => (
+            <div key={row.midi} className="flex items-center h-[20px] border-b border-black/40">
+              <div
+                onClick={() => onAuditionNote?.(row.midi)}
+                title={`Audition ${row.label}`}
+                className={`w-[74px] h-full px-2 flex items-center justify-between text-[10px] font-mono shrink-0 border-r border-black/80 cursor-pointer hover:brightness-125 select-none ${
+                  row.black ? "bg-[#16181c] text-fl-dim" : "bg-[#2a2f37] text-fl-text"
+                }`}
+              >
+                <span>{row.label}</span>
+              </div>
+              <div className="flex items-center">
+                {Array.from({ length: stepCount }, (_, sIdx) => {
+                  const startTick = sIdx * ticksPerStep;
+                  const note = notes.find(
+                    (n) => n.startTick === startTick && n.midiNote === row.midi,
+                  );
+                  const isPlayhead = isPlaying && sIdx === activeStep;
+                  return (
+                    <button
+                      key={sIdx}
+                      type="button"
+                      onClick={() => {
+                        onToggleNote(sIdx, row.midi, slideMode);
+                        onAuditionNote?.(row.midi);
+                      }}
+                      className={`w-[36px] h-[20px] border-r border-black/40 relative cursor-pointer ${
+                        sIdx % 4 === 0 ? "border-l border-l-white/10" : ""
+                      } ${isPlayhead ? "bg-white/10" : row.black ? "bg-[#1a1e24]" : "bg-[#21262d]"}`}
+                    >
+                      {note && (
+                        <span
+                          className="absolute inset-0.5 rounded-[2px] flex items-center justify-center text-[9px] font-bold text-black"
+                          style={{ background: channel.colorHex }}
+                        >
+                          {note.isSlideNote ? "▲" : ""}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+});
+PianoRollEditor.displayName = "PianoRollEditor";
+
 export const App: React.FC = () => {
   const engineClient = useMemo(() => new QlNativeEngineClient(), []);
   const pluginWindowId = useMemo(() => {
@@ -460,13 +566,15 @@ export const App: React.FC = () => {
     if (!audioModalOpen) return;
     const loadHardware = async () => {
       try {
-        const inDevs = await engineClient.getAudioInputDevices();
+        const inDevs = (await engineClient.getAudioInputDevices().catch(() => [])) || [];
         setAudioInputDevices(inDevs);
         if (inDevs.length > 0 && !selectedInputDevice) {
-          const def = inDevs.find((d) => d.isDefault) || inDevs[0];
-          setSelectedInputDevice(def.name);
+          const def = inDevs.find((d) => d?.isDefault) || inDevs[0];
+          if (def?.name) {
+            setSelectedInputDevice(def.name);
+          }
         }
-        const midiDevs = await engineClient.getMidiInputDevices();
+        const midiDevs = (await engineClient.getMidiInputDevices().catch(() => [])) || [];
         setMidiDevices(midiDevs);
       } catch (err) {
         console.warn("Failed to enumerate hardware audio/midi devices", err);
@@ -686,9 +794,14 @@ export const App: React.FC = () => {
   }, [engineClient]);
 
   const handleScanPlugins = useCallback(async (customPaths?: string[]) => {
-    const list = await engineClient.scanPlugins(customPaths);
-    setAvailablePlugins(list);
-    setStatusMessage(`Discovered ${list.length} VST3 / CLAP plugins on system!`);
+    try {
+      const list = await engineClient.scanPlugins(customPaths);
+      setAvailablePlugins(list);
+      setStatusMessage(`Discovered ${list.length} VST3 / CLAP plugins on system!`);
+    } catch (err) {
+      console.warn("Plugin scan failed:", err);
+      setStatusMessage(`Plugin scan notice: ${String(err)}`);
+    }
   }, [engineClient]);
 
   const handleLoadPlugin = useCallback(async (
@@ -697,9 +810,14 @@ export const App: React.FC = () => {
     targetIndex: number,
     slotIndex?: number,
   ) => {
-    const summary = await engineClient.loadPlugin(pluginId, targetKind, targetIndex, slotIndex);
-    setLoadedPlugins((prev) => [...prev.filter((p) => p.instanceId !== summary.instanceId), summary]);
-    setStatusMessage(`Loaded plugin '${summary.descriptor.name}' (${summary.descriptor.format.toUpperCase()})!`);
+    try {
+      const summary = await engineClient.loadPlugin(pluginId, targetKind, targetIndex, slotIndex);
+      setLoadedPlugins((prev) => [...prev.filter((p) => p.instanceId !== summary.instanceId), summary]);
+      setStatusMessage(`Loaded plugin '${summary.descriptor.name}' (${summary.descriptor.format.toUpperCase()})!`);
+    } catch (err) {
+      console.warn("Plugin load failed:", err);
+      setStatusMessage(`Plugin load notice: ${String(err)}`);
+    }
   }, [engineClient]);
 
   const handleSetPluginParameter = useCallback(async (
@@ -707,23 +825,31 @@ export const App: React.FC = () => {
     paramId: number,
     value: number,
   ) => {
-    await engineClient.setPluginParameter(instanceId, paramId, value);
-    setLoadedPlugins((prev) =>
-      prev.map((inst) =>
-        inst.instanceId === instanceId
-          ? {
-              ...inst,
-              parameters: inst.parameters.map((p) => (p.id === paramId ? { ...p, value } : p)),
-            }
-          : inst,
-      ),
-    );
+    try {
+      await engineClient.setPluginParameter(instanceId, paramId, value);
+      setLoadedPlugins((prev) =>
+        prev.map((inst) =>
+          inst.instanceId === instanceId
+            ? {
+                ...inst,
+                parameters: inst.parameters.map((p) => (p.id === paramId ? { ...p, value } : p)),
+              }
+            : inst,
+        ),
+      );
+    } catch (err) {
+      console.warn("Set plugin parameter failed:", err);
+    }
   }, [engineClient]);
 
   const handleUnloadPlugin = useCallback(async (instanceId: string) => {
-    await engineClient.unloadPlugin(instanceId);
-    setLoadedPlugins((prev) => prev.filter((p) => p.instanceId !== instanceId));
-    setStatusMessage(`Unloaded plugin instance`);
+    try {
+      await engineClient.unloadPlugin(instanceId);
+      setLoadedPlugins((prev) => prev.filter((p) => p.instanceId !== instanceId));
+      setStatusMessage(`Unloaded plugin instance`);
+    } catch (err) {
+      console.warn("Unload plugin failed:", err);
+    }
   }, [engineClient]);
 
   const handleTimeStretchClip = useCallback(
@@ -989,10 +1115,48 @@ export const App: React.FC = () => {
   );
 
   const handlePlayPause = useCallback(async () => {
-    if (isPlaying) {
+    try {
+      if (isPlaying) {
+        playbackStartMsRef.current = 0;
+        if (isRecording) {
+          const rec = await engineClient.stopRecording().catch(() => null);
+          if (rec) {
+            const newClip: QlPlaylistClip = {
+              id: `audio_clip_${Date.now()}`,
+              trackIndex: rec.trackIndex || 0,
+              startTick: rec.startTick,
+              lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+              kind: "audio",
+              referenceId: rec.filePath,
+              name: rec.fileName,
+              colorHex: "#00e676",
+            };
+            setPlaylist((prev) => ({
+              ...prev,
+              clips: [...prev.clips, newClip],
+            }));
+          }
+        }
+        const snap = await engineClient.pause();
+        setIsPlaying(snap.isPlaying);
+      } else {
+        if (isRecording) {
+          await engineClient.startRecording(songTick, 0).catch(() => {});
+        }
+        playbackStartMsRef.current = performance.now();
+        const snap = await engineClient.play();
+        setIsPlaying(snap.isPlaying);
+      }
+    } catch (err) {
+      console.warn("Play/pause notice:", err);
+    }
+  }, [engineClient, isPlaying, isRecording, songTick, bpm, ppq]);
+
+  const handleStop = useCallback(async () => {
+    try {
       playbackStartMsRef.current = 0;
       if (isRecording) {
-        const rec = await engineClient.stopRecording();
+        const rec = await engineClient.stopRecording().catch(() => null);
         if (rec) {
           const newClip: QlPlaylistClip = {
             id: `audio_clip_${Date.now()}`,
@@ -1010,43 +1174,13 @@ export const App: React.FC = () => {
           }));
         }
       }
-      const snap = await engineClient.pause();
+      const snap = await engineClient.stop();
       setIsPlaying(snap.isPlaying);
-    } else {
-      if (isRecording) {
-        await engineClient.startRecording(songTick, 0);
-      }
-      playbackStartMsRef.current = performance.now();
-      const snap = await engineClient.play();
-      setIsPlaying(snap.isPlaying);
+      setSongTick(0);
+      setActiveStep(0);
+    } catch (err) {
+      console.warn("Stop notice:", err);
     }
-  }, [engineClient, isPlaying, isRecording, songTick, bpm, ppq]);
-
-  const handleStop = useCallback(async () => {
-    playbackStartMsRef.current = 0;
-    if (isRecording) {
-      const rec = await engineClient.stopRecording();
-      if (rec) {
-        const newClip: QlPlaylistClip = {
-          id: `audio_clip_${Date.now()}`,
-          trackIndex: rec.trackIndex || 0,
-          startTick: rec.startTick,
-          lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
-          kind: "audio",
-          referenceId: rec.filePath,
-          name: rec.fileName,
-          colorHex: "#00e676",
-        };
-        setPlaylist((prev) => ({
-          ...prev,
-          clips: [...prev.clips, newClip],
-        }));
-      }
-    }
-    const snap = await engineClient.stop();
-    setIsPlaying(snap.isPlaying);
-    setSongTick(0);
-    setActiveStep(0);
   }, [engineClient, isRecording, bpm, ppq]);
 
   const handleBpmChange = useCallback(
@@ -1251,7 +1385,11 @@ export const App: React.FC = () => {
         }));
       } else if (action === "delete" && channels.length > 1) {
         pushHistory();
-        setChannels((prev) => prev.filter((c) => c.id !== channelId));
+        const remaining = channels.filter((c) => c.id !== channelId);
+        setChannels(remaining);
+        if (selectedChannelId === channelId) {
+          setSelectedChannelId(remaining[0]?.id ?? "ch_0");
+        }
       }
     },
     [
@@ -1834,13 +1972,15 @@ export const App: React.FC = () => {
   );
 
   const selectedChannel =
-    channels.find((c) => c.id === selectedChannelId) ?? channels[0]!;
+    channels.find((c) => c.id === selectedChannelId) ?? channels[0] ?? INITIAL_CHANNELS[0]!;
 
   const handleAuditionSelectedNote = useCallback(
     (midiNote: number) => {
-      handleAuditionChannel(selectedChannel.id, midiNote);
+      if (selectedChannel?.id) {
+        handleAuditionChannel(selectedChannel.id, midiNote);
+      }
     },
-    [handleAuditionChannel, selectedChannel.id],
+    [handleAuditionChannel, selectedChannel?.id],
   );
 
   return (
@@ -1886,32 +2026,36 @@ export const App: React.FC = () => {
         onPlayPause={handlePlayPause}
         onStop={handleStop}
         onRecord={async () => {
-          if (isPlaying) {
-            if (!isRecording) {
-              await engineClient.startRecording(songTick, 0);
-              setIsRecording(true);
-            } else {
-              const rec = await engineClient.stopRecording();
-              setIsRecording(false);
-              if (rec) {
-                const newClip: QlPlaylistClip = {
-                  id: `audio_clip_${Date.now()}`,
-                  trackIndex: rec.trackIndex || 0,
-                  startTick: rec.startTick,
-                  lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
-                  kind: "audio",
-                  referenceId: rec.filePath,
-                  name: rec.fileName,
-                  colorHex: "#00e676",
-                };
-                setPlaylist((prev) => ({
-                  ...prev,
-                  clips: [...prev.clips, newClip],
-                }));
+          try {
+            if (isPlaying) {
+              if (!isRecording) {
+                await engineClient.startRecording(songTick, 0).catch(() => {});
+                setIsRecording(true);
+              } else {
+                const rec = await engineClient.stopRecording().catch(() => null);
+                setIsRecording(false);
+                if (rec) {
+                  const newClip: QlPlaylistClip = {
+                    id: `audio_clip_${Date.now()}`,
+                    trackIndex: rec.trackIndex || 0,
+                    startTick: rec.startTick,
+                    lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+                    kind: "audio",
+                    referenceId: rec.filePath,
+                    name: rec.fileName,
+                    colorHex: "#00e676",
+                  };
+                  setPlaylist((prev) => ({
+                    ...prev,
+                    clips: [...prev.clips, newClip],
+                  }));
+                }
               }
+            } else {
+              setIsRecording((r) => !r);
             }
-          } else {
-            setIsRecording((r) => !r);
+          } catch (err) {
+            console.warn("Record toggle notice:", err);
           }
         }}
         onModeChange={handleModeChange}
@@ -2556,109 +2700,3 @@ export const App: React.FC = () => {
     </div>
   );
 };
-
-/* Interactive Piano Roll Component (F7) */
-const PIANO_NOTES = [
-  { midi: 72, label: "C6", black: false },
-  { midi: 71, label: "B5", black: false },
-  { midi: 70, label: "A#5", black: true },
-  { midi: 69, label: "A5", black: false },
-  { midi: 68, label: "G#5", black: true },
-  { midi: 67, label: "G5", black: false },
-  { midi: 66, label: "F#5", black: true },
-  { midi: 65, label: "F5", black: false },
-  { midi: 64, label: "E5", black: false },
-  { midi: 63, label: "D#5", black: true },
-  { midi: 62, label: "D5", black: false },
-  { midi: 61, label: "C#5", black: true },
-  { midi: 60, label: "C5 (Root)", black: false },
-  { midi: 58, label: "A#4", black: true },
-  { midi: 57, label: "A4", black: false },
-  { midi: 55, label: "G4", black: false },
-  { midi: 53, label: "F4", black: false },
-  { midi: 52, label: "E4", black: false },
-  { midi: 50, label: "D4", black: false },
-  { midi: 48, label: "C4", black: false },
-];
-
-const PianoRollEditor: React.FC<{
-  readonly channel: QlChannel;
-  readonly notes: readonly QlPianoRollNote[];
-  readonly stepCount: number;
-  readonly activeStep: number;
-  readonly isPlaying: boolean;
-  readonly ppq: number;
-  readonly onToggleNote: (stepIdx: number, midiNote: number, isSlide: boolean) => void;
-  readonly onAuditionNote?: (midiNote: number) => void;
-}> = React.memo(({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote, onAuditionNote }) => {
-  const [slideMode, setSlideMode] = useState(false);
-  const ticksPerStep = ppq / 4;
-
-  return (
-    <div className="flex flex-col h-full bg-[#191d22]">
-      <div className="h-7 px-2 flex items-center gap-3 border-b border-black/70 bg-[#22272e] text-[10px]">
-        <button
-          type="button"
-          onClick={() => setSlideMode((s) => !s)}
-          className={`px-2 py-0.5 rounded font-semibold cursor-pointer fl-bevel ${
-            slideMode ? "bg-fl-orange text-black" : "bg-fl-raised text-fl-dim hover:text-fl-text"
-          }`}
-        >
-          ▲ Slide Note Mode: {slideMode ? "ON" : "OFF"}
-        </button>
-        <span className="text-fl-dim">
-          Click piano keys or grid cells to place & audition notes · Active notes trigger sample-accurate voices in the engine
-        </span>
-      </div>
-      <div className="flex-1 overflow-auto fl-scroll">
-        <div className="inline-flex flex-col min-w-full">
-          {PIANO_NOTES.map((row) => (
-            <div key={row.midi} className="flex items-center h-[20px] border-b border-black/40">
-              <div
-                onClick={() => onAuditionNote?.(row.midi)}
-                title={`Audition ${row.label}`}
-                className={`w-[74px] h-full px-2 flex items-center justify-between text-[10px] font-mono shrink-0 border-r border-black/80 cursor-pointer hover:brightness-125 select-none ${
-                  row.black ? "bg-[#16181c] text-fl-dim" : "bg-[#2a2f37] text-fl-text"
-                }`}
-              >
-                <span>{row.label}</span>
-              </div>
-              <div className="flex items-center">
-                {Array.from({ length: stepCount }, (_, sIdx) => {
-                  const startTick = sIdx * ticksPerStep;
-                  const note = notes.find(
-                    (n) => n.startTick === startTick && n.midiNote === row.midi,
-                  );
-                  const isPlayhead = isPlaying && sIdx === activeStep;
-                  return (
-                    <button
-                      key={sIdx}
-                      type="button"
-                      onClick={() => {
-                        onToggleNote(sIdx, row.midi, slideMode);
-                        onAuditionNote?.(row.midi);
-                      }}
-                      className={`w-[36px] h-[20px] border-r border-black/40 relative cursor-pointer ${
-                        sIdx % 4 === 0 ? "border-l border-l-white/10" : ""
-                      } ${isPlayhead ? "bg-white/10" : row.black ? "bg-[#1a1e24]" : "bg-[#21262d]"}`}
-                    >
-                      {note && (
-                        <span
-                          className="absolute inset-0.5 rounded-[2px] flex items-center justify-center text-[9px] font-bold text-black"
-                          style={{ background: channel.colorHex }}
-                        >
-                          {note.isSlideNote ? "▲" : ""}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-});
-PianoRollEditor.displayName = "PianoRollEditor";

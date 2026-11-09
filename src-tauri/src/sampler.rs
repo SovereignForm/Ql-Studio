@@ -29,6 +29,12 @@ pub struct LoadedSampleSummary {
     pub frame_count: usize,
     pub sample_rate: u32,
     pub duration_ms: f64,
+    pub slot_index: u8,
+    pub name: String,
+    pub original_sample_rate: u32,
+    pub engine_sample_rate: u32,
+    pub channels: u16,
+    pub duration_seconds: f64,
 }
 
 /// 4-point, 3rd-order Hermite Cubic Interpolation at fractional index `pos`.
