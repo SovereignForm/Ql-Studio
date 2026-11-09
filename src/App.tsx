@@ -516,7 +516,7 @@ export const App: React.FC = () => {
       const saved = localStorage.getItem("ql_visual_sync_offset_ms");
       if (saved !== null) return Number(saved);
     }
-    return 0; // 0 ms default (FL Studio standard Playback Tracking 0ms Offset)
+    return 50; // 50 ms default: Standard PipeWire/ALSA/WASAPI DAC & queue acoustic compensation
   });
   const visualSyncOffsetMsRef = useRef(visualSyncOffsetMs);
   visualSyncOffsetMsRef.current = visualSyncOffsetMs;
@@ -572,14 +572,14 @@ export const App: React.FC = () => {
   const handleAutoCalibrateDevice = useCallback(() => {
     const sampleRate = audioSettings.sampleRate || 48000;
     const bufFrames = audioSettings.bufferSizeFrames || 512;
-    // Standard hardware output path: 1 engine buffer + 1 audio driver DAC buffer
-    const calculatedHwDelayMs = Math.round(((bufFrames * 2) / sampleRate) * 1000);
+    // Standard hardware output path: 1 engine buffer + 1 audio driver DAC buffer + OS daemon queue (~25ms)
+    const calculatedHwDelayMs = Math.round(((bufFrames * 2) / sampleRate) * 1000) + 25;
     setVisualSyncOffsetMs(calculatedHwDelayMs);
     if (typeof window !== "undefined") {
       localStorage.setItem("ql_visual_sync_offset_ms", String(calculatedHwDelayMs));
     }
     setCalibStatusText(
-      `✓ Auto-calibrated for ${audioSettings.deviceName}: +${calculatedHwDelayMs}ms (2x ${bufFrames} buffer @ ${sampleRate}Hz)`,
+      `✓ Auto-calibrated for ${audioSettings.deviceName}: +${calculatedHwDelayMs}ms (${bufFrames} frames + OS DAC queue @ ${sampleRate}Hz)`,
     );
   }, [audioSettings]);
 
@@ -872,7 +872,7 @@ export const App: React.FC = () => {
           const userSaved = localStorage.getItem("ql_visual_sync_offset_ms");
           // If no custom manual override was saved, automatically calibrate for this soundcard
           if (userSaved === null && s.sampleRate > 0 && s.bufferSizeFrames > 0) {
-            const autoHwDelay = Math.round(((s.bufferSizeFrames * 2) / s.sampleRate) * 1000);
+            const autoHwDelay = Math.round(((s.bufferSizeFrames * 2) / s.sampleRate) * 1000) + 25;
             setVisualSyncOffsetMs(autoHwDelay);
           }
         }
@@ -2035,7 +2035,7 @@ export const App: React.FC = () => {
         const snap = await engineClient.setAudioBufferSize(bufFrames);
         setAudioSettings(snap);
         if (snap.sampleRate > 0 && snap.bufferSizeFrames > 0) {
-          const autoHwDelay = Math.round(((snap.bufferSizeFrames * 2) / snap.sampleRate) * 1000);
+          const autoHwDelay = Math.round(((snap.bufferSizeFrames * 2) / snap.sampleRate) * 1000) + 25;
           setVisualSyncOffsetMs(autoHwDelay);
           if (typeof window !== "undefined") {
             localStorage.setItem("ql_visual_sync_offset_ms", String(autoHwDelay));
@@ -2503,7 +2503,7 @@ export const App: React.FC = () => {
                           className="px-2.5 py-1.5 rounded bg-fl-orange text-black font-bold text-[10px] flex items-center justify-center gap-1.5 hover:brightness-110 cursor-pointer shadow"
                         >
                           <Zap size={12} />
-                          Auto-Detect Hardware DAC (+{Math.round(((audioSettings.bufferSizeFrames * 2) / audioSettings.sampleRate) * 1000)}ms)
+                          Auto-Detect Hardware DAC (+{Math.round(((audioSettings.bufferSizeFrames * 2) / audioSettings.sampleRate) * 1000) + 25}ms)
                         </button>
 
                         <button
@@ -2548,39 +2548,82 @@ export const App: React.FC = () => {
                         </div>
                       )}
 
+                      {/* 1-Click Calibration Presets */}
+                      <div className="space-y-1 pt-1">
+                        <div className="text-[9px] uppercase tracking-wider text-fl-dim font-bold flex justify-between">
+                          <span>Quick Sync Presets:</span>
+                          <span className="text-[#00e676]">Recommended default: +50 ms</span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-1.5">
+                          {[
+                            { label: "0 ms (ASIO)", val: 0 },
+                            { label: "+30 ms (Fast)", val: 30 },
+                            { label: "+50 ms (Standard)", val: 50 },
+                            { label: "+85 ms (Wireless)", val: 85 },
+                          ].map((pre) => (
+                            <button
+                              key={pre.val}
+                              type="button"
+                              onClick={() => {
+                                setVisualSyncOffsetMs(pre.val);
+                                if (typeof window !== "undefined") {
+                                  localStorage.setItem("ql_visual_sync_offset_ms", String(pre.val));
+                                }
+                                setCalibStatusText(`Offset set to ${pre.label}`);
+                              }}
+                              className={`py-1 px-1 rounded text-[9px] font-mono cursor-pointer border border-black/60 fl-bevel ${
+                                visualSyncOffsetMs === pre.val
+                                  ? "bg-fl-orange text-black font-bold"
+                                  : "bg-fl-raised text-fl-text hover:text-white"
+                              }`}
+                            >
+                              {pre.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
                       {/* Manual fine-tuning slider */}
-                      <div className="flex items-center gap-2 pt-1">
-                        <span className="text-[10px] text-fl-dim font-mono">-100ms</span>
-                        <input
-                          type="range"
-                          min={-100}
-                          max={100}
-                          step={1}
-                          value={visualSyncOffsetMs}
-                          onChange={(e) => {
-                            const val = Number(e.target.value);
-                            setVisualSyncOffsetMs(val);
-                            if (typeof window !== "undefined") {
-                              localStorage.setItem("ql_visual_sync_offset_ms", String(val));
-                            }
-                          }}
-                          className="flex-1 accent-fl-orange cursor-pointer h-1.5 bg-black/50 rounded"
-                        />
-                        <span className="text-[10px] text-fl-dim font-mono">+100ms</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const def = 0;
-                            setVisualSyncOffsetMs(def);
-                            if (typeof window !== "undefined") {
-                              localStorage.setItem("ql_visual_sync_offset_ms", String(def));
-                            }
-                            setCalibStatusText("Offset reset to 0ms (FL Studio default).");
-                          }}
-                          className="px-2 py-0.5 text-[9px] rounded bg-fl-raised fl-bevel text-fl-text hover:text-white cursor-pointer ml-1"
-                        >
-                          Reset (0ms)
-                        </button>
+                      <div className="space-y-1 pt-1">
+                        <div className="flex justify-between items-center text-[10px] text-fl-dim">
+                          <span>Manual Playhead Delay:</span>
+                          <span className="text-[9px] text-fl-dim italic">
+                            Sound heard AFTER cursor? Increase (+50ms..+80ms). Sound heard BEFORE? Decrease.
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-fl-dim font-mono">-50ms</span>
+                          <input
+                            type="range"
+                            min={-50}
+                            max={150}
+                            step={1}
+                            value={visualSyncOffsetMs}
+                            onChange={(e) => {
+                              const val = Number(e.target.value);
+                              setVisualSyncOffsetMs(val);
+                              if (typeof window !== "undefined") {
+                                localStorage.setItem("ql_visual_sync_offset_ms", String(val));
+                              }
+                            }}
+                            className="flex-1 accent-fl-orange cursor-pointer h-1.5 bg-black/50 rounded"
+                          />
+                          <span className="text-[10px] text-fl-dim font-mono">+150ms</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const def = 50;
+                              setVisualSyncOffsetMs(def);
+                              if (typeof window !== "undefined") {
+                                localStorage.setItem("ql_visual_sync_offset_ms", String(def));
+                              }
+                              setCalibStatusText("Offset reset to recommended +50ms standard.");
+                            }}
+                            className="px-2 py-0.5 text-[9px] rounded bg-fl-raised fl-bevel text-fl-text hover:text-white cursor-pointer ml-1"
+                          >
+                            Reset (+50ms)
+                          </button>
+                        </div>
                       </div>
                     </div>
 
