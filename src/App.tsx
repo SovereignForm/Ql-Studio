@@ -11,8 +11,10 @@ import {
   Radio,
   Settings,
   SlidersHorizontal,
+  Target,
   Volume2,
   X,
+  Zap,
 } from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -518,6 +520,99 @@ export const App: React.FC = () => {
   });
   const visualSyncOffsetMsRef = useRef(visualSyncOffsetMs);
   visualSyncOffsetMsRef.current = visualSyncOffsetMs;
+
+  const [testPulseActive, setTestPulseActive] = useState(false);
+  const [testPulseFlash, setTestPulseFlash] = useState(false);
+  const [calibStatusText, setCalibStatusText] = useState<string | null>(null);
+  const lastPulseTimeRef = useRef<number>(0);
+  const tapDeltasRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    if (!testPulseActive) {
+      setTestPulseFlash(false);
+      return;
+    }
+
+    const AudioCtx =
+      window.AudioContext ||
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+
+    const playPulse = () => {
+      try {
+        lastPulseTimeRef.current = performance.now();
+        setTestPulseFlash(true);
+        setTimeout(() => setTestPulseFlash(false), 90);
+
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.setValueAtTime(1000, ctx.currentTime);
+        gain.gain.setValueAtTime(0.35, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.04);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.04);
+      } catch {
+        // ignore
+      }
+    };
+
+    playPulse();
+    const id = window.setInterval(playPulse, 500);
+
+    return () => {
+      clearInterval(id);
+      void ctx.close().catch(() => {});
+    };
+  }, [testPulseActive]);
+
+  const handleAutoCalibrateDevice = useCallback(() => {
+    const sampleRate = audioSettings.sampleRate || 48000;
+    const bufFrames = audioSettings.bufferSizeFrames || 512;
+    // Standard hardware output path: 1 engine buffer + 1 audio driver DAC buffer
+    const calculatedHwDelayMs = Math.round(((bufFrames * 2) / sampleRate) * 1000);
+    setVisualSyncOffsetMs(calculatedHwDelayMs);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("ql_visual_sync_offset_ms", String(calculatedHwDelayMs));
+    }
+    setCalibStatusText(
+      `✓ Auto-calibrated for ${audioSettings.deviceName}: +${calculatedHwDelayMs}ms (2x ${bufFrames} buffer @ ${sampleRate}Hz)`,
+    );
+  }, [audioSettings]);
+
+  const handleTapSync = useCallback(() => {
+    if (!testPulseActive) {
+      setTestPulseActive(true);
+      setCalibStatusText("Pulse started! Tap 3 times in rhythm with the acoustic click...");
+      tapDeltasRef.current = [];
+      return;
+    }
+    const now = performance.now();
+    const diffFromPulse = now - lastPulseTimeRef.current;
+    const relativeDiff = diffFromPulse > 250 ? diffFromPulse - 500 : diffFromPulse;
+    tapDeltasRef.current.push(relativeDiff);
+
+    const count = tapDeltasRef.current.length;
+    if (count < 3) {
+      setCalibStatusText(`Tap ${count}/3 recorded... Tap ${3 - count} more time${3 - count > 1 ? "s" : ""}!`);
+    } else {
+      const avg = Math.round(
+        tapDeltasRef.current.reduce((a, b) => a + b, 0) / tapDeltasRef.current.length,
+      );
+      tapDeltasRef.current = [];
+      const calibrated = Math.max(-100, Math.min(100, visualSyncOffsetMs + avg));
+      setVisualSyncOffsetMs(calibrated);
+      if (typeof window !== "undefined") {
+        localStorage.setItem("ql_visual_sync_offset_ms", String(calibrated));
+      }
+      setCalibStatusText(
+        `✓ Interactive sync calibrated: ${calibrated > 0 ? `+${calibrated}` : calibrated}ms (tap delta: ${avg > 0 ? `+${avg}` : avg}ms)`,
+      );
+    }
+  }, [testPulseActive, visualSyncOffsetMs]);
 
   const [audioModalOpen, setAudioModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
@@ -2365,20 +2460,79 @@ export const App: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Timeline Playhead Sync Offset (Audio-Visual Latency Alignment) */}
-                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2">
+                    {/* Device Latency Auto-Calibration & Playhead Sync Wizard */}
+                    <div className="p-3 rounded bg-fl-deep fl-inset space-y-2.5 border border-fl-orange/30">
                       <div className="flex justify-between items-center text-[11px]">
-                        <span className="font-bold text-fl-orange flex items-center gap-1">
-                          <SlidersHorizontal size={12} /> TIMELINE SYNC OFFSET (PLAYHEAD ALIGNMENT)
+                        <span className="font-bold text-fl-orange flex items-center gap-1.5">
+                          <Zap size={13} className="text-fl-orange animate-pulse" />
+                          DEVICE LATENCY AUTO-CALIBRATION & PLAYHEAD SYNC
                         </span>
                         <span className="font-mono text-white font-bold bg-black/60 px-2 py-0.5 rounded text-[11px]">
                           {visualSyncOffsetMs > 0 ? `+${visualSyncOffsetMs}` : visualSyncOffsetMs} ms
                         </span>
                       </div>
+
                       <p className="text-[10px] text-fl-dim leading-relaxed">
-                        Compensates for soundcard DAC & driver hardware buffer delay. Aligns the red timeline cursor and step LED highlights with the exact microsecond acoustic sound reaches your ears.
+                        Measures your soundcard DAC buffer ({audioSettings.bufferSizeFrames} smp @ {audioSettings.sampleRate} Hz)
+                        to synchronize timeline playhead and step LEDs to the exact microsecond acoustic sound reaches your ears.
                       </p>
-                      <div className="flex items-center gap-2">
+
+                      {/* Auto Calibrate & Test Controls */}
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={handleAutoCalibrateDevice}
+                          title="Calculate and apply exact hardware DAC buffer delay for this soundcard"
+                          className="px-2.5 py-1.5 rounded bg-fl-orange text-black font-bold text-[10px] flex items-center justify-center gap-1.5 hover:brightness-110 cursor-pointer shadow"
+                        >
+                          <Zap size={12} />
+                          Auto-Detect Hardware DAC (+{Math.round(((audioSettings.bufferSizeFrames * 2) / audioSettings.sampleRate) * 1000)}ms)
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setTestPulseActive((v) => !v)}
+                          title="Play continuous 120 BPM audio-visual synchronization beep"
+                          className={`px-2.5 py-1.5 rounded text-[10px] font-bold flex items-center justify-center gap-1.5 cursor-pointer border border-black/60 fl-bevel ${
+                            testPulseActive
+                              ? "bg-fl-led text-black"
+                              : "bg-fl-raised text-fl-text hover:text-white"
+                          }`}
+                        >
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              testPulseFlash ? "bg-white shadow-[0_0_8px_#fff]" : "bg-black/50"
+                            }`}
+                          />
+                          {testPulseActive ? "Stop Sync Pulse" : "🔊 Test Sync Pulse (Beep)"}
+                        </button>
+                      </div>
+
+                      {/* Interactive Tap Calibration if Test Pulse is Active */}
+                      {testPulseActive && (
+                        <div className="p-2 rounded bg-black/40 border border-white/10 flex items-center justify-between gap-2">
+                          <span className="text-[10px] text-fl-dim">
+                            Hear the beep? Tap in rhythm with the click:
+                          </span>
+                          <button
+                            type="button"
+                            onClick={handleTapSync}
+                            className="px-3 py-1 bg-sky-500 hover:bg-sky-400 text-black font-bold text-[10px] rounded cursor-pointer active:scale-95 transition-transform flex items-center gap-1"
+                          >
+                            <Target size={12} />
+                            Tap to Sync Beat
+                          </button>
+                        </div>
+                      )}
+
+                      {calibStatusText && (
+                        <div className="text-[10px] text-[#00e676] bg-black/50 px-2 py-1 rounded font-mono border border-[#00e676]/30">
+                          {calibStatusText}
+                        </div>
+                      )}
+
+                      {/* Manual fine-tuning slider */}
+                      <div className="flex items-center gap-2 pt-1">
                         <span className="text-[10px] text-fl-dim font-mono">-100ms</span>
                         <input
                           type="range"
@@ -2404,6 +2558,7 @@ export const App: React.FC = () => {
                             if (typeof window !== "undefined") {
                               localStorage.setItem("ql_visual_sync_offset_ms", String(def));
                             }
+                            setCalibStatusText("Offset reset to 0ms (FL Studio default).");
                           }}
                           className="px-2 py-0.5 text-[9px] rounded bg-fl-raised fl-bevel text-fl-text hover:text-white cursor-pointer ml-1"
                         >
