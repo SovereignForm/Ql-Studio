@@ -394,6 +394,16 @@ export const App: React.FC = () => {
     availableBufferSizes: [256, 512, 1024, 2048],
     streamActive: true,
   });
+  const [visualSyncOffsetMs, setVisualSyncOffsetMs] = useState<number>(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("ql_visual_sync_offset_ms");
+      if (saved !== null) return Number(saved);
+    }
+    return 45; // 45 ms default hardware DAC/driver latency compensation
+  });
+  const visualSyncOffsetMsRef = useRef(visualSyncOffsetMs);
+  visualSyncOffsetMsRef.current = visualSyncOffsetMs;
+
   const [audioModalOpen, setAudioModalOpen] = useState(false);
   const [aboutModalOpen, setAboutModalOpen] = useState(false);
   const [pluginModalOpen, setPluginModalOpen] = useState(false);
@@ -868,8 +878,10 @@ export const App: React.FC = () => {
           elapsedSec = Math.max(0, (nowMs - (playbackStartMsRef.current || nowMs)) / 1000.0);
         }
 
+        const offsetSec = visualSyncOffsetMsRef.current / 1000.0;
+        const compensatedSec = Math.max(0, elapsedSec - offsetSec);
         const ticksPerSec = (bpm / 60.0) * ppq;
-        const currentTick = Math.floor(elapsedSec * ticksPerSec);
+        const currentTick = Math.floor(compensatedSec * ticksPerSec);
         const ticksPerStep = ppq / 4;
         const stepCount = curPat.stepCount || 16;
         const stepIdx = Math.floor(currentTick / ticksPerStep) % stepCount;
@@ -2143,6 +2155,53 @@ export const App: React.FC = () => {
                             </button>
                           );
                         })}
+                      </div>
+                    </div>
+
+                    {/* Timeline Playhead Sync Offset (Audio-Visual Latency Alignment) */}
+                    <div className="p-2.5 rounded bg-fl-deep fl-inset space-y-2">
+                      <div className="flex justify-between items-center text-[11px]">
+                        <span className="font-bold text-fl-orange flex items-center gap-1">
+                          <SlidersHorizontal size={12} /> TIMELINE SYNC OFFSET (PLAYHEAD ALIGNMENT)
+                        </span>
+                        <span className="font-mono text-white font-bold bg-black/60 px-2 py-0.5 rounded text-[11px]">
+                          {visualSyncOffsetMs > 0 ? `+${visualSyncOffsetMs}` : visualSyncOffsetMs} ms
+                        </span>
+                      </div>
+                      <p className="text-[10px] text-fl-dim leading-relaxed">
+                        Compensates for soundcard DAC & driver hardware buffer delay. Aligns the red timeline cursor and step LED highlights with the exact microsecond acoustic sound reaches your ears.
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-fl-dim font-mono">-50ms</span>
+                        <input
+                          type="range"
+                          min={-50}
+                          max={150}
+                          step={1}
+                          value={visualSyncOffsetMs}
+                          onChange={(e) => {
+                            const val = Number(e.target.value);
+                            setVisualSyncOffsetMs(val);
+                            if (typeof window !== "undefined") {
+                              localStorage.setItem("ql_visual_sync_offset_ms", String(val));
+                            }
+                          }}
+                          className="flex-1 accent-fl-orange cursor-pointer h-1.5 bg-black/50 rounded"
+                        />
+                        <span className="text-[10px] text-fl-dim font-mono">+150ms</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const def = 45;
+                            setVisualSyncOffsetMs(def);
+                            if (typeof window !== "undefined") {
+                              localStorage.setItem("ql_visual_sync_offset_ms", String(def));
+                            }
+                          }}
+                          className="px-2 py-0.5 text-[9px] rounded bg-fl-raised fl-bevel text-fl-text hover:text-white cursor-pointer ml-1"
+                        >
+                          Reset (45ms)
+                        </button>
                       </div>
                     </div>
 
