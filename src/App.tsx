@@ -952,7 +952,9 @@ export const App: React.FC = () => {
           playbackStartMsRef.current = 0;
           void engineClient.pause().then((s) => setIsPlaying(s.isPlaying));
         } else {
-          playbackStartMsRef.current = performance.now();
+          const ticksPerSec = (bpm / 60.0) * ppq;
+          const initialOffsetMs = (songTick / ticksPerSec) * 1000;
+          playbackStartMsRef.current = performance.now() - initialOffsetMs;
           void engineClient.play().then((s) => setIsPlaying(s.isPlaying));
         }
       } else if (e.key === "F5") {
@@ -997,7 +999,9 @@ export const App: React.FC = () => {
   useEffect(() => {
     let rafId = 0;
     if (isPlaying && playbackStartMsRef.current === 0) {
-      playbackStartMsRef.current = performance.now();
+      const ticksPerSec = (bpm / 60.0) * ppq;
+      const initialOffsetMs = (songTick / ticksPerSec) * 1000;
+      playbackStartMsRef.current = performance.now() - initialOffsetMs;
     }
     let prevStep = -1;
     let prevTick = -1;
@@ -1015,6 +1019,8 @@ export const App: React.FC = () => {
       }
 
       let activeVoices = 0;
+      let currentTick = 0;
+
       if (isPlaying) {
         const curPat = activePatternRef.current || activePattern;
         const curChans = channelsRef.current.length > 0 ? channelsRef.current : channels;
@@ -1031,10 +1037,16 @@ export const App: React.FC = () => {
         const offsetSec = visualSyncOffsetMsRef.current / 1000.0;
         const compensatedSec = Math.max(0, elapsedSec - offsetSec);
         const ticksPerSec = (bpm / 60.0) * ppq;
-        const currentTick = Math.floor(compensatedSec * ticksPerSec);
+        currentTick = Math.floor(compensatedSec * ticksPerSec);
         const ticksPerStep = ppq / 4;
         const stepCount = curPat.stepCount || 16;
         const stepIdx = Math.floor(currentTick / ticksPerStep) % stepCount;
+
+        // Smooth 60 FPS playhead movement across Playlist and PianoRoll
+        if (currentTick !== prevTick) {
+          prevTick = currentTick;
+          setSongTick(currentTick);
+        }
 
         if (stepIdx !== prevStep) {
           prevStep = stepIdx;
@@ -1077,13 +1089,9 @@ export const App: React.FC = () => {
         }
       }
 
-      // Throttle UI and meter updates to 30 FPS to prevent event loop / CPU thread lock
+      // Throttle UI meters and stats to 30 FPS to prevent event loop / CPU thread lock
       if (nowMs - lastUiThrottle > 33) {
         lastUiThrottle = nowMs;
-        if (isPlaying && currentTick !== prevTick) {
-          prevTick = currentTick;
-          setSongTick(currentTick);
-        }
         if (isPlaying || maxDecay > 0.005) {
           const nextLevels: (readonly [number, number])[] = new Array(65);
           for (let i = 0; i < 65; i++) {
@@ -1157,7 +1165,9 @@ export const App: React.FC = () => {
         if (isRecording) {
           await engineClient.startRecording(songTick, 0).catch(() => {});
         }
-        playbackStartMsRef.current = performance.now();
+        const ticksPerSec = (bpm / 60.0) * ppq;
+        const initialOffsetMs = (songTick / ticksPerSec) * 1000;
+        playbackStartMsRef.current = performance.now() - initialOffsetMs;
         const snap = await engineClient.play();
         setIsPlaying(snap.isPlaying);
       }
@@ -2214,6 +2224,9 @@ export const App: React.FC = () => {
               onSelectPattern={setActivePatternId}
               onSeekTick={(tick) => {
                 setSongTick(tick);
+                const ticksPerSec = (bpm / 60.0) * ppq;
+                const offsetMs = (tick / ticksPerSec) * 1000;
+                playbackStartMsRef.current = performance.now() - offsetMs;
                 setActiveStep(
                   Math.floor(tick / (ppq / 4)) % (activePattern.stepCount || 16),
                 );

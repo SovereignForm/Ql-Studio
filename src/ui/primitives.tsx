@@ -15,7 +15,7 @@ export interface KnobProps {
   readonly color?: string;
   /** Draw the arc from the center (bipolar, e.g. pan) instead of from min. */
   readonly bipolar?: boolean;
-  readonly title: string;
+  readonly title?: string;
   readonly format?: (v: number) => string;
   readonly onChange: (v: number) => void;
 }
@@ -219,7 +219,7 @@ PeakMeter.displayName = "PeakMeter";
 export const Led: React.FC<{
   readonly on: boolean;
   readonly color?: string;
-  readonly title: string;
+  readonly title?: string;
   readonly onClick?: () => void;
   readonly size?: number;
 }> = ({ on, color = "#25d366", title, onClick, size = 11 }) => (
@@ -245,7 +245,7 @@ export const Led: React.FC<{
 export const ToolButton: React.FC<{
   readonly active?: boolean;
   readonly glow?: string;
-  readonly title: string;
+  readonly title?: string;
   readonly onClick?: () => void;
   readonly children: React.ReactNode;
   readonly className?: string;
