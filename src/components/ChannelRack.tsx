@@ -48,7 +48,7 @@ export const ChannelRackHeader: React.FC<{
   readonly onSelectPattern: (id: string) => void;
   readonly onNewPattern: () => void;
   readonly onStepCountChange: (n: number) => void;
-}> = ({ patterns, activePatternId, stepCount, onSelectPattern, onNewPattern, onStepCountChange }) => (
+}> = React.memo(({ patterns, activePatternId, stepCount, onSelectPattern, onNewPattern, onStepCountChange }) => (
   <>
     <div className="relative">
       <select
@@ -87,7 +87,8 @@ export const ChannelRackHeader: React.FC<{
       ))}
     </div>
   </>
-);
+));
+ChannelRackHeader.displayName = "ChannelRackHeader";
 
 /* ------------------------------ Rack ------------------------------ */
 export interface ChannelRackProps {

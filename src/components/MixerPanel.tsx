@@ -29,6 +29,7 @@ export interface MixerPanelProps {
 
 const FADER_MIN = -60;
 const FADER_MAX = 5.6;
+const ZERO_LEVEL: readonly [number, number] = [0, 0];
 
 export const MixerPanel: React.FC<MixerPanelProps> = React.memo(({
   mixer,
@@ -50,11 +51,11 @@ export const MixerPanel: React.FC<MixerPanelProps> = React.memo(({
             <MixerStrip
               key={ins.index}
               insert={ins}
-              level={levels[ins.index] ?? [0, 0]}
+              level={levels[ins.index] ?? ZERO_LEVEL}
               selected={ins.index === selectedInsert}
               inUse={insertsInUse.has(ins.index)}
-              onSelect={() => onSelectInsert(ins.index)}
-              onUpdate={(patch) => onUpdateInsert(ins.index, patch)}
+              onSelectInsert={onSelectInsert}
+              onUpdateInsert={onUpdateInsert}
             />
           ))}
         </div>
@@ -74,10 +75,12 @@ const MixerStrip: React.FC<{
   readonly level: readonly [number, number];
   readonly selected: boolean;
   readonly inUse: boolean;
-  readonly onSelect: () => void;
-  readonly onUpdate: (patch: InsertPatch) => void;
-}> = React.memo(({ insert, level, selected, inUse, onSelect, onUpdate }) => {
+  readonly onSelectInsert: (index: number) => void;
+  readonly onUpdateInsert: (index: number, patch: InsertPatch) => void;
+}> = React.memo(({ insert, level, selected, inUse, onSelectInsert, onUpdateInsert }) => {
   const isMaster = insert.index === 0;
+  const onSelect = React.useCallback(() => onSelectInsert(insert.index), [onSelectInsert, insert.index]);
+  const onUpdate = React.useCallback((patch: InsertPatch) => onUpdateInsert(insert.index, patch), [onUpdateInsert, insert.index]);
   return (
     <div
       onPointerDown={onSelect}

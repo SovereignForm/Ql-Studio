@@ -146,8 +146,6 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
         ctx.stroke();
       }
       ctx.strokeStyle = "#00e676";
-      ctx.shadowColor = "#00e676";
-      ctx.shadowBlur = 4;
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       for (let x = 0; x < c.width; x++) {
@@ -161,7 +159,6 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
         else ctx.lineTo(x, y);
       }
       ctx.stroke();
-      ctx.shadowBlur = 0;
       if (playing || amp > 0.001) {
         if (playing) phase += 0.35;
         raf = requestAnimationFrame(draw);

@@ -439,6 +439,15 @@ const PianoRollEditor: React.FC<{
 });
 PianoRollEditor.displayName = "PianoRollEditor";
 
+const ZERO_LEVEL: readonly [number, number] = [0, 0];
+const SILENT_LEVELS: readonly (readonly [number, number])[] = Array.from({ length: 65 }, () => ZERO_LEVEL);
+
+const BROWSER_ICON = <FolderTree size={12} />;
+const RACK_ICON = <LayoutGrid size={12} />;
+const PIANO_ICON = <Piano size={12} />;
+const PLAYLIST_ICON = <Columns3 size={12} />;
+const MIXER_ICON = <SlidersHorizontal size={12} />;
+
 export const App: React.FC = () => {
   const engineClient = useMemo(() => new QlNativeEngineClient(), []);
   const pluginWindowId = useMemo(() => {
@@ -505,7 +514,7 @@ export const App: React.FC = () => {
       const saved = localStorage.getItem("ql_visual_sync_offset_ms");
       if (saved !== null) return Number(saved);
     }
-    return 45; // 45 ms default hardware DAC/driver latency compensation
+    return 0; // 0 ms default (FL Studio standard Playback Tracking 0ms Offset)
   });
   const visualSyncOffsetMsRef = useRef(visualSyncOffsetMs);
   visualSyncOffsetMsRef.current = visualSyncOffsetMs;
@@ -702,9 +711,7 @@ export const App: React.FC = () => {
     ],
   );
 
-  const [insertLevels, setInsertLevels] = useState<readonly (readonly [number, number])[]>(
-    () => Array.from({ length: 65 }, () => [0, 0] as const),
-  );
+  const [insertLevels, setInsertLevels] = useState<readonly (readonly [number, number])[]>(SILENT_LEVELS);
   const [stats, setStats] = useState<SystemStats>({
     uiLoadPercent: 3,
     memoryMb: 48,
@@ -1071,26 +1078,33 @@ export const App: React.FC = () => {
       }
 
       // Throttle UI and meter updates to 30 FPS to prevent event loop / CPU thread lock
-      if (nowMs - lastUiThrottle > 32) {
+      if (nowMs - lastUiThrottle > 33) {
         lastUiThrottle = nowMs;
         if (isPlaying && currentTick !== prevTick) {
           prevTick = currentTick;
           setSongTick(currentTick);
         }
-        if (isPlaying || maxDecay > 0.002) {
-          setInsertLevels(decayLevels.map(([l, r]) => [l, r] as const));
-          setStats((prev) => ({
-            ...prev,
-            uiLoadPercent: isPlaying ? 5 + activeVoices * 2 : 2,
-            polyphony: isPlaying ? Math.max(activeVoices, decayLevels[0]![0] > 0.15 ? 2 : 0) : 0,
-          }));
+        if (isPlaying || maxDecay > 0.005) {
+          const nextLevels: (readonly [number, number])[] = new Array(65);
+          for (let i = 0; i < 65; i++) {
+            const l = decayLevels[i]![0];
+            const r = decayLevels[i]![1];
+            nextLevels[i] = (l < 0.002 && r < 0.002) ? ZERO_LEVEL : [l, r];
+          }
+          setInsertLevels(nextLevels);
+
+          const nextLoad = isPlaying ? 5 + activeVoices * 2 : 2;
+          const nextPoly = isPlaying ? Math.max(activeVoices, decayLevels[0]![0] > 0.15 ? 2 : 0) : 0;
+          setStats((prev) => {
+            if (prev.uiLoadPercent === nextLoad && prev.polyphony === nextPoly) return prev;
+            return { ...prev, uiLoadPercent: nextLoad, polyphony: nextPoly };
+          });
         } else {
-          setInsertLevels(decayLevels.map(() => [0, 0] as const));
-          setStats((prev) => ({
-            ...prev,
-            uiLoadPercent: 1,
-            polyphony: 0,
-          }));
+          setInsertLevels((prev) => (prev === SILENT_LEVELS ? prev : SILENT_LEVELS));
+          setStats((prev) => {
+            if (prev.uiLoadPercent === 1 && prev.polyphony === 0) return prev;
+            return { ...prev, uiLoadPercent: 1, polyphony: 0 };
+          });
         }
       }
 
@@ -1983,6 +1997,15 @@ export const App: React.FC = () => {
     [handleAuditionChannel, selectedChannel?.id],
   );
 
+  const patternNames = useMemo(() => patterns.map((p) => p.name), [patterns]);
+  const channelNames = useMemo(() => channels.map((c) => c.name), [channels]);
+  const handleLoadWavForSelectedChannel = useCallback(() => {
+    void handleOpenWavDialogForChannel(selectedChannelId);
+  }, [handleOpenWavDialogForChannel, selectedChannelId]);
+  const handleOpenPluginManagerModal = useCallback(() => {
+    setPluginModalOpen(true);
+  }, []);
+
   return (
     <div className="h-screen w-screen flex flex-col bg-fl-base overflow-hidden select-none">
       <input
@@ -2059,7 +2082,7 @@ export const App: React.FC = () => {
           }
         }}
         onModeChange={handleModeChange}
-        onOpenPluginManager={() => setPluginModalOpen(true)}
+        onOpenPluginManager={handleOpenPluginManagerModal}
         onBpmChange={handleBpmChange}
         onMasterVolumeChange={handleMasterVolumeChange}
         onMasterPitchChange={setMasterPitchCents}
@@ -2097,17 +2120,15 @@ export const App: React.FC = () => {
           <FloatingWindow
             state={windows.browser}
             title="BROWSER — PACKS & PCM WAV SAMPLES"
-            icon={<FolderTree size={12} />}
+            icon={BROWSER_ICON}
             onFocus={focusWindow}
             onChange={updateWindow}
           >
             <BrowserSidebar
-              patternNames={patterns.map((p) => p.name)}
-              channelNames={channels.map((c) => c.name)}
+              patternNames={patternNames}
+              channelNames={channelNames}
               customWavItems={customWavItems}
-              onLoadWavForSelectedChannel={() =>
-                void handleOpenWavDialogForChannel(selectedChannelId)
-              }
+              onLoadWavForSelectedChannel={handleLoadWavForSelectedChannel}
             />
           </FloatingWindow>
         )}
@@ -2117,7 +2138,7 @@ export const App: React.FC = () => {
           <FloatingWindow
             state={windows.rack}
             title="CHANNEL RACK & STEP SEQUENCER (F6)"
-            icon={<LayoutGrid size={12} />}
+            icon={RACK_ICON}
             headerExtras={
               <ChannelRackHeader
                 patterns={patterns}
@@ -2154,7 +2175,7 @@ export const App: React.FC = () => {
           <FloatingWindow
             state={windows.pianoroll}
             title={`PIANO ROLL (F7) — ${selectedChannel.name.toUpperCase()}`}
-            icon={<Piano size={12} />}
+            icon={PIANO_ICON}
             onFocus={focusWindow}
             onChange={updateWindow}
           >
@@ -2176,7 +2197,7 @@ export const App: React.FC = () => {
           <FloatingWindow
             state={windows.playlist}
             title="PLAYLIST ARRANGEMENT (F5) — UNLIMITED MULTI-TRACK TIMELINE"
-            icon={<Columns3 size={12} />}
+            icon={PLAYLIST_ICON}
             onFocus={focusWindow}
             onChange={updateWindow}
           >
@@ -2209,7 +2230,7 @@ export const App: React.FC = () => {
             title={`MIXER (F9) — MASTER + 64 INSERTS (SELECTED: ${
               selectedInsert === 0 ? "MASTER" : `INSERT ${selectedInsert}`
             })`}
-            icon={<SlidersHorizontal size={12} />}
+            icon={MIXER_ICON}
             onFocus={focusWindow}
             onChange={updateWindow}
           >
@@ -2222,7 +2243,7 @@ export const App: React.FC = () => {
               onUpdateInsert={handleUpdateInsert}
               onSetEffect={handleSetEffect}
               onToggleBypass={handleToggleBypass}
-              onOpenPluginManager={() => setPluginModalOpen(true)}
+              onOpenPluginManager={handleOpenPluginManagerModal}
             />
           </FloatingWindow>
         )}
@@ -2345,11 +2366,11 @@ export const App: React.FC = () => {
                         Compensates for soundcard DAC & driver hardware buffer delay. Aligns the red timeline cursor and step LED highlights with the exact microsecond acoustic sound reaches your ears.
                       </p>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-fl-dim font-mono">-50ms</span>
+                        <span className="text-[10px] text-fl-dim font-mono">-100ms</span>
                         <input
                           type="range"
-                          min={-50}
-                          max={150}
+                          min={-100}
+                          max={100}
                           step={1}
                           value={visualSyncOffsetMs}
                           onChange={(e) => {
@@ -2361,11 +2382,11 @@ export const App: React.FC = () => {
                           }}
                           className="flex-1 accent-fl-orange cursor-pointer h-1.5 bg-black/50 rounded"
                         />
-                        <span className="text-[10px] text-fl-dim font-mono">+150ms</span>
+                        <span className="text-[10px] text-fl-dim font-mono">+100ms</span>
                         <button
                           type="button"
                           onClick={() => {
-                            const def = 45;
+                            const def = 0;
                             setVisualSyncOffsetMs(def);
                             if (typeof window !== "undefined") {
                               localStorage.setItem("ql_visual_sync_offset_ms", String(def));
@@ -2373,7 +2394,7 @@ export const App: React.FC = () => {
                           }}
                           className="px-2 py-0.5 text-[9px] rounded bg-fl-raised fl-bevel text-fl-text hover:text-white cursor-pointer ml-1"
                         >
-                          Reset (45ms)
+                          Reset (0ms)
                         </button>
                       </div>
                     </div>

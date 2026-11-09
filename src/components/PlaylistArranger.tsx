@@ -417,6 +417,184 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
   // Total bars rendered in ruler
   const totalBars = Math.ceil(maxClipTick / ticksPerBar);
 
+  const rulerBars = useMemo(() => {
+    return Array.from({ length: totalBars }, (_, barIdx) => {
+      const barLeft = barIdx * ticksPerBar * pxPerTick;
+      return (
+        <div
+          key={barIdx}
+          className="absolute top-0 bottom-0 border-l border-white/20 pl-1 text-[10px] font-mono text-fl-amber flex items-center"
+          style={{ left: `${barLeft}px` }}
+        >
+          BAR {barIdx + 1}
+        </div>
+      );
+    });
+  }, [totalBars, ticksPerBar, pxPerTick]);
+
+  const gridLines = useMemo(() => {
+    return Array.from({ length: totalBars }, (_, bIdx) => {
+      const left = bIdx * ticksPerBar * pxPerTick;
+      return (
+        <div
+          key={bIdx}
+          className="absolute top-0 bottom-0 border-l border-white/10"
+          style={{ left: `${left}px` }}
+        />
+      );
+    });
+  }, [totalBars, ticksPerBar, pxPerTick]);
+
+  const trackLanesElements = useMemo(() => {
+    return tracks.map((track) => (
+      <div
+        key={track.index}
+        onClick={(e) => handleLaneClick(track.index, e)}
+        className={`h-[46px] border-b border-black/40 relative cursor-crosshair ${
+          track.index % 2 === 0 ? "bg-[#16181d]" : "bg-[#1a1d23]"
+        }`}
+      />
+    ));
+  }, [tracks, handleLaneClick]);
+
+  const renderedClips = useMemo(() => {
+    return playlist.clips.map((clip) => {
+      const leftPx = clip.startTick * pxPerTick;
+      const widthPx = Math.max(16, clip.lengthTicks * pxPerTick);
+      const topPx = clip.trackIndex * TRACK_HEIGHT;
+      const isSelected = selectedClipId === clip.id;
+
+      return (
+        <div
+          key={clip.id}
+          onPointerDown={(e) => handleClipDragStart(clip, e)}
+          onDoubleClick={() => {
+            if (clip.kind === "pattern") {
+              onSelectPattern(clip.referenceId);
+            } else if (clip.kind === "audio") {
+              setEditingAudioClip(clip);
+              setModalStretchRatio(clip.stretchRatio ?? 1.0);
+              setModalPitchSemitones(clip.pitchSemitones ?? 0);
+            }
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            deleteClip(clip.id);
+          }}
+          style={{
+            left: `${leftPx}px`,
+            top: `${topPx + 2}px`,
+            width: `${widthPx}px`,
+            height: `${TRACK_HEIGHT - 4}px`,
+            borderColor: clip.colorHex,
+          }}
+          className={`absolute rounded-sm border overflow-hidden cursor-grab active:cursor-grabbing flex flex-col z-10 transition-shadow ${
+            isSelected ? "ring-2 ring-white shadow-lg" : "shadow-sm"
+          }`}
+        >
+          {/* Clip Header Label */}
+          <div
+            className="h-4.5 px-1.5 text-[9px] font-bold text-black flex items-center justify-between truncate"
+            style={{ background: clip.colorHex }}
+          >
+            <span className="truncate flex items-center gap-1">
+              {clip.kind === "pattern" && <Music size={9} />}
+              {clip.kind === "audio" && <AudioWaveform size={9} />}
+              {clip.kind === "automation" && <Activity size={9} />}
+              {clip.name}
+              {clip.kind === "audio" && clip.stretchRatio && clip.stretchRatio !== 1.0 && (
+                <span className="bg-black/60 text-[#00e676] px-1 rounded-2xs text-[7px] font-mono">
+                  {clip.stretchRatio.toFixed(2)}x
+                </span>
+              )}
+              {clip.kind === "audio" && clip.pitchSemitones && clip.pitchSemitones !== 0 && (
+                <span className="bg-black/60 text-fl-amber px-1 rounded-2xs text-[7px] font-mono">
+                  {clip.pitchSemitones > 0 ? `+${clip.pitchSemitones}` : clip.pitchSemitones}st
+                </span>
+              )}
+            </span>
+            <span className="text-[8px] opacity-75 font-mono">
+              {Math.round(clip.lengthTicks / ppq)} beats
+            </span>
+          </div>
+
+          {/* Clip Body Visualization */}
+          <div className="flex-1 bg-black/60 relative p-1 flex items-center">
+            {clip.kind === "pattern" && (
+              <div className="w-full flex items-center gap-0.5 opacity-60">
+                {Array.from({ length: 16 }, (_, i) => (
+                  <div
+                    key={i}
+                    className="h-3 flex-1 rounded-2xs"
+                    style={{
+                      background: i % 4 === 0 ? clip.colorHex : "rgba(255,255,255,0.2)",
+                    }}
+                  />
+                ))}
+              </div>
+            )}
+
+            {clip.kind === "audio" && (
+              <div className="w-full flex items-center justify-around h-full opacity-70">
+                {Array.from({ length: 32 }, (_, i) => {
+                  const h = 20 + Math.sin(i * 0.4) * 15 + (i % 3) * 6;
+                  return (
+                    <div
+                      key={i}
+                      className="w-1 bg-[#00e676] rounded-xs"
+                      style={{ height: `${h}%` }}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {clip.kind === "automation" && (
+              <div className="w-full h-full relative">
+                <svg className="w-full h-full" preserveAspectRatio="none">
+                  <path
+                    d="M 0 25 Q 30 5, 60 20 T 120 10 T 200 25"
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth="2"
+                  />
+                  <circle cx="0" cy="25" r="3" fill="#ffffff" />
+                  <circle cx="60" cy="20" r="3" fill="#ffffff" />
+                  <circle cx="120" cy="10" r="3" fill="#ffffff" />
+                </svg>
+              </div>
+            )}
+          </div>
+
+          {/* Right Edge Resize Handle (or Time-Stretch Handle) */}
+          <div
+            onPointerDown={(e) => handleResizeRight(clip, e)}
+            title={
+              activeTool === "stretch" && clip.kind === "audio"
+                ? "Drag to WSOLA Time-Stretch (Preserves Pitch)"
+                : "Drag to Resize Duration"
+            }
+            className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-20 transition-colors ${
+              activeTool === "stretch" && clip.kind === "audio"
+                ? "bg-[#00e676]/70 hover:bg-[#00e676]"
+                : "hover:bg-white/40"
+            }`}
+          />
+        </div>
+      );
+    });
+  }, [
+    playlist.clips,
+    pxPerTick,
+    selectedClipId,
+    activeTool,
+    onSelectPattern,
+    ppq,
+    handleClipDragStart,
+    deleteClip,
+    handleResizeRight,
+  ]);
+
   return (
     <div className="flex flex-col h-full bg-[#181a1f] text-fl-text select-none text-[11px] overflow-hidden">
       {/* Top Arranger Toolbar */}
@@ -661,18 +839,7 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
             className="h-6 bg-[#262a33] border-b border-black/80 sticky top-0 z-20 cursor-pointer flex relative shrink-0"
             style={{ width: `${maxClipTick * pxPerTick}px` }}
           >
-            {Array.from({ length: totalBars }, (_, barIdx) => {
-              const barLeft = barIdx * ticksPerBar * pxPerTick;
-              return (
-                <div
-                  key={barIdx}
-                  className="absolute top-0 bottom-0 border-l border-white/20 pl-1 text-[10px] font-mono text-fl-amber flex items-center"
-                  style={{ left: `${barLeft}px` }}
-                >
-                  BAR {barIdx + 1}
-                </div>
-              );
-            })}
+            {rulerBars}
 
             {/* Playhead Marker on Ruler */}
             <div
@@ -691,155 +858,14 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
           >
             {/* Background Grid Lines (Bar and Beat divisions) */}
             <div className="absolute inset-0 pointer-events-none">
-              {Array.from({ length: totalBars }, (_, bIdx) => {
-                const left = bIdx * ticksPerBar * pxPerTick;
-                return (
-                  <div
-                    key={bIdx}
-                    className="absolute top-0 bottom-0 border-l border-white/10"
-                    style={{ left: `${left}px` }}
-                  />
-                );
-              })}
+              {gridLines}
             </div>
 
             {/* Render Horizontal Track Lanes */}
-            {tracks.map((track) => (
-              <div
-                key={track.index}
-                onClick={(e) => handleLaneClick(track.index, e)}
-                className={`h-[46px] border-b border-black/40 relative cursor-crosshair ${
-                  track.index % 2 === 0 ? "bg-[#16181d]" : "bg-[#1a1d23]"
-                }`}
-              />
-            ))}
+            {trackLanesElements}
 
             {/* Render Clips */}
-            {playlist.clips.map((clip) => {
-              const leftPx = clip.startTick * pxPerTick;
-              const widthPx = Math.max(16, clip.lengthTicks * pxPerTick);
-              const topPx = clip.trackIndex * TRACK_HEIGHT;
-              const isSelected = selectedClipId === clip.id;
-
-              return (
-                <div
-                  key={clip.id}
-                  onPointerDown={(e) => handleClipDragStart(clip, e)}
-                  onDoubleClick={() => {
-                    if (clip.kind === "pattern") {
-                      onSelectPattern(clip.referenceId);
-                    } else if (clip.kind === "audio") {
-                      setEditingAudioClip(clip);
-                      setModalStretchRatio(clip.stretchRatio ?? 1.0);
-                      setModalPitchSemitones(clip.pitchSemitones ?? 0);
-                    }
-                  }}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    deleteClip(clip.id);
-                  }}
-                  style={{
-                    left: `${leftPx}px`,
-                    top: `${topPx + 2}px`,
-                    width: `${widthPx}px`,
-                    height: `${TRACK_HEIGHT - 4}px`,
-                    borderColor: clip.colorHex,
-                  }}
-                  className={`absolute rounded-sm border overflow-hidden cursor-grab active:cursor-grabbing flex flex-col z-10 transition-shadow ${
-                    isSelected ? "ring-2 ring-white shadow-lg" : "shadow-sm"
-                  }`}
-                >
-                  {/* Clip Header Label */}
-                  <div
-                    className="h-4.5 px-1.5 text-[9px] font-bold text-black flex items-center justify-between truncate"
-                    style={{ background: clip.colorHex }}
-                  >
-                    <span className="truncate flex items-center gap-1">
-                      {clip.kind === "pattern" && <Music size={9} />}
-                      {clip.kind === "audio" && <AudioWaveform size={9} />}
-                      {clip.kind === "automation" && <Activity size={9} />}
-                      {clip.name}
-                      {clip.kind === "audio" && clip.stretchRatio && clip.stretchRatio !== 1.0 && (
-                        <span className="bg-black/60 text-[#00e676] px-1 rounded-2xs text-[7px] font-mono">
-                          {clip.stretchRatio.toFixed(2)}x
-                        </span>
-                      )}
-                      {clip.kind === "audio" && clip.pitchSemitones && clip.pitchSemitones !== 0 && (
-                        <span className="bg-black/60 text-fl-amber px-1 rounded-2xs text-[7px] font-mono">
-                          {clip.pitchSemitones > 0 ? `+${clip.pitchSemitones}` : clip.pitchSemitones}st
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-[8px] opacity-75 font-mono">
-                      {Math.round(clip.lengthTicks / ppq)} beats
-                    </span>
-                  </div>
-
-                  {/* Clip Body Visualization */}
-                  <div className="flex-1 bg-black/60 relative p-1 flex items-center">
-                    {clip.kind === "pattern" && (
-                      <div className="w-full flex items-center gap-0.5 opacity-60">
-                        {Array.from({ length: 16 }, (_, i) => (
-                          <div
-                            key={i}
-                            className="h-3 flex-1 rounded-2xs"
-                            style={{
-                              background: i % 4 === 0 ? clip.colorHex : "rgba(255,255,255,0.2)",
-                            }}
-                          />
-                        ))}
-                      </div>
-                    )}
-
-                    {clip.kind === "audio" && (
-                      <div className="w-full flex items-center justify-around h-full opacity-70">
-                        {Array.from({ length: 32 }, (_, i) => {
-                          const h = 20 + Math.sin(i * 0.4) * 15 + (i % 3) * 6;
-                          return (
-                            <div
-                              key={i}
-                              className="w-1 bg-[#00e676] rounded-xs"
-                              style={{ height: `${h}%` }}
-                            />
-                          );
-                        })}
-                      </div>
-                    )}
-
-                    {clip.kind === "automation" && (
-                      <div className="w-full h-full relative">
-                        <svg className="w-full h-full" preserveAspectRatio="none">
-                          <path
-                            d="M 0 25 Q 30 5, 60 20 T 120 10 T 200 25"
-                            fill="none"
-                            stroke="#38bdf8"
-                            strokeWidth="2"
-                          />
-                          <circle cx="0" cy="25" r="3" fill="#ffffff" />
-                          <circle cx="60" cy="20" r="3" fill="#ffffff" />
-                          <circle cx="120" cy="10" r="3" fill="#ffffff" />
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Right Edge Resize Handle (or Time-Stretch Handle) */}
-                  <div
-                    onPointerDown={(e) => handleResizeRight(clip, e)}
-                    title={
-                      activeTool === "stretch" && clip.kind === "audio"
-                        ? "Drag to WSOLA Time-Stretch (Preserves Pitch)"
-                        : "Drag to Resize Duration"
-                    }
-                    className={`absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize z-20 transition-colors ${
-                      activeTool === "stretch" && clip.kind === "audio"
-                        ? "bg-[#00e676]/70 hover:bg-[#00e676]"
-                        : "hover:bg-white/40"
-                    }`}
-                  />
-                </div>
-              );
-            })}
+            {renderedClips}
 
             {/* Continuous Vertical Playhead Cursor Line */}
             <div

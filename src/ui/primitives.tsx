@@ -136,23 +136,52 @@ export const PeakMeter: React.FC<PeakMeterProps> = React.memo(({
   orientation = "vertical",
 }) => {
   const ref = useRef<HTMLCanvasElement | null>(null);
+  const wasSilentRef = useRef(false);
+  const gradRef = useRef<CanvasGradient | null>(null);
+  const gradDimRef = useRef({ w: 0, h: 0, o: "" });
+
   useEffect(() => {
     const c = ref.current;
-    const ctx = c?.getContext("2d");
+    const ctx = c?.getContext("2d", { alpha: false });
     if (!c || !ctx) return;
-    c.width = width;
-    c.height = height;
-    ctx.fillStyle = "#0a0b0d";
-    ctx.fillRect(0, 0, width, height);
+
+    const isSilent = left < 0.001 && right < 0.001;
+    if (isSilent && wasSilentRef.current) {
+      return;
+    }
+
     const vertical = orientation === "vertical";
     const len = vertical ? height : width;
-    const grad = vertical
-      ? ctx.createLinearGradient(0, height, 0, 0)
-      : ctx.createLinearGradient(0, 0, width, 0);
-    grad.addColorStop(0, "#00c853");
-    grad.addColorStop(0.68, "#7cff3a");
-    grad.addColorStop(0.82, "#ffb300");
-    grad.addColorStop(0.94, "#ff3d3d");
+
+    // Draw background
+    ctx.fillStyle = "#0a0b0d";
+    ctx.fillRect(0, 0, width, height);
+
+    if (isSilent) {
+      wasSilentRef.current = true;
+      return;
+    }
+    wasSilentRef.current = false;
+
+    // Reuse gradient unless dimensions or orientation changed
+    if (
+      !gradRef.current ||
+      gradDimRef.current.w !== width ||
+      gradDimRef.current.h !== height ||
+      gradDimRef.current.o !== orientation
+    ) {
+      const grad = vertical
+        ? ctx.createLinearGradient(0, height, 0, 0)
+        : ctx.createLinearGradient(0, 0, width, 0);
+      grad.addColorStop(0, "#00c853");
+      grad.addColorStop(0.68, "#7cff3a");
+      grad.addColorStop(0.82, "#ffb300");
+      grad.addColorStop(0.94, "#ff3d3d");
+      gradRef.current = grad;
+      gradDimRef.current = { w: width, h: height, o: orientation };
+    }
+
+    const grad = gradRef.current;
     const lanes = [left, right];
     const laneSize = (vertical ? width : height) / 2;
     lanes.forEach((lvl, i) => {
@@ -163,6 +192,7 @@ export const PeakMeter: React.FC<PeakMeterProps> = React.memo(({
       if (vertical) ctx.fillRect(i * laneSize + 1, height - fill, laneSize - 2, fill);
       else ctx.fillRect(0, i * laneSize + 1, fill, laneSize - 2);
     });
+
     // segment gaps
     ctx.fillStyle = "rgba(0,0,0,0.45)";
     for (let p = 3; p < len; p += 3) {
@@ -170,7 +200,16 @@ export const PeakMeter: React.FC<PeakMeterProps> = React.memo(({
       else ctx.fillRect(p, 0, 1, height);
     }
   }, [left, right, width, height, orientation]);
-  return <canvas ref={ref} className="rounded-[2px] fl-inset" style={{ width, height }} />;
+
+  return (
+    <canvas
+      ref={ref}
+      width={width}
+      height={height}
+      className="rounded-[2px] fl-inset"
+      style={{ width, height }}
+    />
+  );
 });
 PeakMeter.displayName = "PeakMeter";
 
