@@ -103,6 +103,7 @@ export interface ChannelRackProps {
   readonly onReplaceGenerator: (channelId: string, item: BrowserItem) => void;
   readonly onDropWavPath?: (channelId: string, path: string) => void;
   readonly onAddChannel: () => void;
+  readonly onAuditionChannel?: (channelId: string, midiNote?: number) => void;
 }
 
 const STEP_W = 22;
@@ -120,6 +121,7 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
   onReplaceGenerator,
   onDropWavPath,
   onAddChannel,
+  onAuditionChannel,
 }) => {
   const [graphOpen, setGraphOpen] = useState(true);
   const [graphParam, setGraphParam] = useState<GraphParam>("velocity");
@@ -232,13 +234,16 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
                 />
                 <button
                   type="button"
-                  onClick={() => onSelectChannel(ch.id)}
+                  onClick={() => {
+                    onSelectChannel(ch.id);
+                    onAuditionChannel?.(ch.id);
+                  }}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     onSelectChannel(ch.id);
                     setMenu({ channelId: ch.id, x: e.clientX, y: e.clientY });
                   }}
-                  title="Left-click: select · Right-click: channel menu · Drop browser item to replace generator"
+                  title="Left-click: select & audition · Right-click: channel menu · Drop browser item to replace generator"
                   className="w-[132px] h-[22px] shrink-0 flex items-center rounded-[3px] overflow-hidden border border-black/70 fl-bevel cursor-pointer"
                   style={{
                     background: `linear-gradient(180deg, ${ch.colorHex}55, ${ch.colorHex}22)`,
@@ -276,10 +281,18 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
                           const value = e.button === 2 ? false : !st.active;
                           paintRef.current = { channelId: ch.id, value };
                           onUpdateStep(ch.id, i, { active: value });
+                          if (value) {
+                            onAuditionChannel?.(ch.id);
+                          }
                         }}
                         onPointerEnter={() => {
                           const p = paintRef.current;
-                          if (p && p.channelId === ch.id && st.active !== p.value) onUpdateStep(ch.id, i, { active: p.value });
+                          if (p && p.channelId === ch.id && st.active !== p.value) {
+                            onUpdateStep(ch.id, i, { active: p.value });
+                            if (p.value) {
+                              onAuditionChannel?.(ch.id);
+                            }
+                          }
                         }}
                         onContextMenu={(e) => e.preventDefault()}
                         title={`Step ${i + 1} · vel ${st.velocity}`}

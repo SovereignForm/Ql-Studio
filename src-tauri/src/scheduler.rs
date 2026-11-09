@@ -120,7 +120,7 @@ impl NativeLookaheadScheduler {
         Self {
             metrics: compute_timing_metrics(bpm, ppq, sample_rate),
             global_swing_ratio: global_swing_ratio.clamp(0.50, 0.75),
-            lookahead_window_sec: 0.065, // 65 ms generous lookahead horizon for PipeWire/ALSA stability
+            lookahead_window_sec: 0.025, // 25 ms snappy lookahead horizon for ultra low latency
             next_unscheduled_tick: 0,
             is_playing: false,
             play_mode: PlayMode::Pattern,

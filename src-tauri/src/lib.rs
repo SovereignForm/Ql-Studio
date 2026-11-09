@@ -69,6 +69,7 @@ pub fn run() {
             commands::time_stretch_audio_clip,
             commands::stretch_channel_sample,
             commands::open_plugin_gui_window,
+            commands::trigger_channel_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Ql Studio Tauri application");

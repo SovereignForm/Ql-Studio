@@ -268,6 +268,8 @@ export class QlNativeEngineClient {
   private webAudioPattern: QlPattern | null = null;
   private webAudioChannels: readonly QlChannel[] = [];
   private webAudioStepIndex = 0;
+  private webAudioNextStepTime = 0;
+  private webAudioPlaybackStartAudioTime = 0;
 
   public get isNativeRuntime(): boolean {
     return typeof window !== "undefined" && isTauri();
@@ -286,91 +288,151 @@ export class QlNativeEngineClient {
     }
   }
 
-  private triggerWebAudioStep(stepIdx: number): void {
+  private triggerWebAudioChannelVoice(
+    ch: QlChannel,
+    now: number,
+    velocity: number = 100,
+    midiNote?: number,
+    finePan: number = 0,
+    gateRatio: number = 0.8,
+  ): void {
     const ctx = this.webAudioCtx;
+    if (!ctx) return;
+
+    const velGain = Math.pow(velocity / 127, 1.5) * Math.pow(10, ch.volumeDb / 20) * 0.30;
+    const gainNode = ctx.createGain();
+    const panNode = ctx.createStereoPanner();
+    panNode.pan.setValueAtTime(Math.max(-1, Math.min(1, ch.pan + finePan)), now);
+    gainNode.connect(panNode);
+    panNode.connect(ctx.destination);
+
+    const midi = midiNote ?? (ch.rootMidiNote + ch.pitchSemitones);
+    const freq = 440 * Math.pow(2, (midi - 69) / 12);
+    const stepDurSec = 60 / this.fallbackStatus.bpm / 4;
+
+    if (ch.sampleSlot === 0 || ch.name.toLowerCase().includes("kick")) {
+      const osc = ctx.createOscillator();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(155, now);
+      osc.frequency.exponentialRampToValueAtTime(46, now + 0.08);
+      gainNode.gain.setValueAtTime(velGain * 1.5, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc.connect(gainNode);
+      osc.start(now);
+      osc.stop(now + 0.36);
+    } else if (
+      ch.sampleSlot === 1 ||
+      ch.sampleSlot === 2 ||
+      ch.sampleSlot === 3 ||
+      ch.name.toLowerCase().includes("clap") ||
+      ch.name.toLowerCase().includes("hat") ||
+      ch.name.toLowerCase().includes("snare")
+    ) {
+      const dur = ch.sampleSlot === 2 || ch.name.toLowerCase().includes("hat") ? 0.065 : 0.19;
+      const bufLen = Math.max(256, Math.floor(ctx.sampleRate * dur));
+      const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < bufLen; i++) {
+        data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.28));
+      }
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      const filter = ctx.createBiquadFilter();
+      filter.type = ch.sampleSlot === 2 ? "highpass" : "bandpass";
+      filter.frequency.setValueAtTime(ch.sampleSlot === 2 ? 6500 : 1800, now);
+      gainNode.gain.setValueAtTime(velGain, now);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, now + dur);
+      src.connect(filter);
+      filter.connect(gainNode);
+      src.start(now);
+    } else {
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq, now);
+      gainNode.gain.setValueAtTime(0.001, now);
+      gainNode.gain.linearRampToValueAtTime(velGain * 0.7, now + 0.008);
+      gainNode.gain.exponentialRampToValueAtTime(0.001, now + Math.max(0.08, stepDurSec * gateRatio));
+      osc.connect(gainNode);
+      osc.start(now);
+      osc.stop(now + Math.max(0.09, stepDurSec * gateRatio + 0.01));
+    }
+  }
+
+  private triggerWebAudioStepAt(stepIdx: number, now: number): void {
     const pat = this.webAudioPattern;
-    if (!ctx || !pat) return;
+    if (!pat) return;
 
     const anySolo = this.webAudioChannels.some((c) => c.solo);
-    const stepDurSec = 60 / this.fallbackStatus.bpm / 4;
-    const now = ctx.currentTime + 0.015;
-
     for (const ch of this.webAudioChannels) {
       if (ch.muted || (anySolo && !ch.solo)) continue;
       const chData = pat.channelData[ch.id];
       const step = chData?.steps[stepIdx];
       if (!step || !step.active) continue;
 
-      const velGain = Math.pow(step.velocity / 127, 1.5) * Math.pow(10, ch.volumeDb / 20) * 0.25;
-      const gainNode = ctx.createGain();
-      const panNode = ctx.createStereoPanner();
-      panNode.pan.setValueAtTime(Math.max(-1, Math.min(1, ch.pan + step.finePan)), now);
-      gainNode.connect(panNode);
-      panNode.connect(ctx.destination);
-
       const midi = ch.rootMidiNote + ch.pitchSemitones + step.pitchOffsetSemitones;
-      const freq = 440 * Math.pow(2, (midi - 69) / 12);
-
-      if (ch.sampleSlot === 0 || ch.name.toLowerCase().includes("kick")) {
-        const osc = ctx.createOscillator();
-        osc.type = "sine";
-        osc.frequency.setValueAtTime(155, now);
-        osc.frequency.exponentialRampToValueAtTime(46, now + 0.08);
-        gainNode.gain.setValueAtTime(velGain * 1.4, now);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
-        osc.connect(gainNode);
-        osc.start(now);
-        osc.stop(now + 0.36);
-      } else if (
-        ch.sampleSlot === 1 ||
-        ch.sampleSlot === 2 ||
-        ch.sampleSlot === 3 ||
-        ch.name.toLowerCase().includes("clap") ||
-        ch.name.toLowerCase().includes("hat") ||
-        ch.name.toLowerCase().includes("snare")
-      ) {
-        const dur = ch.sampleSlot === 2 || ch.name.toLowerCase().includes("hat") ? 0.065 : 0.19;
-        const bufLen = Math.max(256, Math.floor(ctx.sampleRate * dur));
-        const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
-        const data = buf.getChannelData(0);
-        for (let i = 0; i < bufLen; i++) {
-          data[i] = (Math.random() * 2 - 1) * Math.exp(-i / (bufLen * 0.28));
-        }
-        const src = ctx.createBufferSource();
-        src.buffer = buf;
-        const filter = ctx.createBiquadFilter();
-        filter.type = ch.sampleSlot === 2 ? "highpass" : "bandpass";
-        filter.frequency.setValueAtTime(ch.sampleSlot === 2 ? 6500 : 1800, now);
-        gainNode.gain.setValueAtTime(velGain, now);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, now + dur);
-        src.connect(filter);
-        filter.connect(gainNode);
-        src.start(now);
-      } else {
-        const osc = ctx.createOscillator();
-        osc.type = "sawtooth";
-        osc.frequency.setValueAtTime(freq, now);
-        gainNode.gain.setValueAtTime(0.001, now);
-        gainNode.gain.linearRampToValueAtTime(velGain * 0.7, now + 0.008);
-        gainNode.gain.exponentialRampToValueAtTime(0.001, now + Math.max(0.08, stepDurSec * step.gateRatio));
-        osc.connect(gainNode);
-        osc.start(now);
-        osc.stop(now + Math.max(0.09, stepDurSec * step.gateRatio + 0.01));
-      }
+      this.triggerWebAudioChannelVoice(ch, now, step.velocity, midi, step.finePan, step.gateRatio);
     }
+  }
+
+  public triggerWebAudioChannelNote(
+    channelId: string,
+    midiNote?: number,
+    velocity: number = 100,
+  ): void {
+    this.ensureWebAudioFallback();
+    const ctx = this.webAudioCtx;
+    if (!ctx) return;
+    const ch = this.webAudioChannels.find((c) => c.id === channelId);
+    if (!ch) return;
+    this.triggerWebAudioChannelVoice(ch, ctx.currentTime, velocity, midiNote);
+  }
+
+  public async triggerChannelNote(
+    channelId: string,
+    midiNote?: number,
+    velocity?: number,
+  ): Promise<void> {
+    if (!this.isNativeRuntime) {
+      this.triggerWebAudioChannelNote(channelId, midiNote, velocity);
+      return;
+    }
+    return invoke<void>("trigger_channel_note", {
+      channelId,
+      midiNote,
+      velocity,
+    });
+  }
+
+  public getAudioElapsedSeconds(): number {
+    if (!this.isNativeRuntime && this.webAudioCtx && this.fallbackStatus.isPlaying) {
+      return Math.max(0, this.webAudioCtx.currentTime - this.webAudioPlaybackStartAudioTime);
+    }
+    return -1;
   }
 
   private startWebAudioLoop(): void {
     this.stopWebAudioLoop();
     this.ensureWebAudioFallback();
-    const tickIntervalMs = () => (60 / this.fallbackStatus.bpm / 4) * 1000;
-    const stepFn = () => {
-      if (!this.fallbackStatus.isPlaying) return;
-      this.triggerWebAudioStep(this.webAudioStepIndex % 16);
-      this.webAudioStepIndex = (this.webAudioStepIndex + 1) % 16;
-      this.webAudioTimer = window.setTimeout(stepFn, tickIntervalMs());
+    const ctx = this.webAudioCtx;
+    if (!ctx) return;
+
+    this.webAudioPlaybackStartAudioTime = ctx.currentTime;
+    this.webAudioNextStepTime = ctx.currentTime + 0.005;
+    this.webAudioStepIndex = 0;
+
+    const scheduler = () => {
+      if (!this.fallbackStatus.isPlaying || !this.webAudioCtx) return;
+      const stepDurSec = 60 / this.fallbackStatus.bpm / 4;
+      const stepCount = this.webAudioPattern?.stepCount || 16;
+
+      while (this.webAudioNextStepTime < this.webAudioCtx.currentTime + 0.080) {
+        this.triggerWebAudioStepAt(this.webAudioStepIndex, this.webAudioNextStepTime);
+        this.webAudioNextStepTime += stepDurSec;
+        this.webAudioStepIndex = (this.webAudioStepIndex + 1) % stepCount;
+      }
+      this.webAudioTimer = window.setTimeout(scheduler, 25);
     };
-    stepFn();
+    scheduler();
   }
 
   private stopWebAudioLoop(): void {
@@ -378,6 +440,7 @@ export class QlNativeEngineClient {
       clearTimeout(this.webAudioTimer);
       this.webAudioTimer = null;
     }
+    this.webAudioStepIndex = 0;
   }
 
   public async play(): Promise<NativeEngineStatusSnapshot> {

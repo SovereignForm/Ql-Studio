@@ -352,6 +352,10 @@ export const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const wavInputRef = useRef<HTMLInputElement | null>(null);
   const wavTargetChannelRef = useRef<string>("ch_0");
+  const playbackStartMsRef = useRef<number>(0);
+  const activePatternRef = useRef<QlPattern | null>(null);
+  const channelsRef = useRef<QlChannel[]>([]);
+  const mixerRef = useRef<QlMixerState | null>(null);
 
   const [projectTitle, setProjectTitle] = useState("Ql Studio — Audio Production Session");
   const [bpm, setBpm] = useState(140.0);
@@ -785,8 +789,10 @@ export const App: React.FC = () => {
       if (e.code === "Space") {
         e.preventDefault();
         if (isPlaying) {
+          playbackStartMsRef.current = 0;
           void engineClient.pause().then((s) => setIsPlaying(s.isPlaying));
         } else {
+          playbackStartMsRef.current = performance.now();
           void engineClient.play().then((s) => setIsPlaying(s.isPlaying));
         }
       } else if (e.key === "F5") {
@@ -822,10 +828,17 @@ export const App: React.FC = () => {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [engineClient, isPlaying, toggleWindow, handleToggleFullscreen, handleUndo, handleRedo]);
 
+  // Synchronously mirror latest reactive state to refs for glitch-free continuous audio/playhead loop
+  activePatternRef.current = activePattern;
+  channelsRef.current = channels;
+  mixerRef.current = mixer;
+
   // Playhead, Song Tick, and Real-Time Peak Meter / Polyphony animation loop
   useEffect(() => {
     let rafId = 0;
-    const startMs = performance.now();
+    if (isPlaying && playbackStartMsRef.current === 0) {
+      playbackStartMsRef.current = performance.now();
+    }
     let prevStep = -1;
     let prevTick = -1;
     let lastUiThrottle = 0;
@@ -843,12 +856,23 @@ export const App: React.FC = () => {
 
       let activeVoices = 0;
       if (isPlaying) {
-        const elapsedSec = (nowMs - startMs) / 1000.0;
+        const curPat = activePatternRef.current || activePattern;
+        const curChans = channelsRef.current.length > 0 ? channelsRef.current : channels;
+        const curMix = mixerRef.current || mixer;
+
+        let elapsedSec = 0;
+        const webAudioSec = engineClient.getAudioElapsedSeconds();
+        if (webAudioSec >= 0) {
+          elapsedSec = webAudioSec;
+        } else {
+          elapsedSec = Math.max(0, (nowMs - (playbackStartMsRef.current || nowMs)) / 1000.0);
+        }
+
         const ticksPerSec = (bpm / 60.0) * ppq;
         const currentTick = Math.floor(elapsedSec * ticksPerSec);
         const ticksPerStep = ppq / 4;
-        const stepIdx =
-          Math.floor(currentTick / ticksPerStep) % activePattern.stepCount;
+        const stepCount = curPat.stepCount || 16;
+        const stepIdx = Math.floor(currentTick / ticksPerStep) % stepCount;
 
         if (currentTick !== prevTick) {
           prevTick = currentTick;
@@ -857,11 +881,11 @@ export const App: React.FC = () => {
         if (stepIdx !== prevStep) {
           prevStep = stepIdx;
           setActiveStep(stepIdx);
-          for (const ch of channels) {
-            const anySolo = channels.some((c) => c.solo);
+          for (const ch of curChans) {
+            const anySolo = curChans.some((c) => c.solo);
             const audible = anySolo ? ch.solo : !ch.muted;
             if (!audible) continue;
-            const st = activePattern.channelData[ch.id]?.steps[stepIdx];
+            const st = curPat.channelData[ch.id]?.steps[stepIdx];
             if (st?.active) {
               activeVoices += 1;
               const vel = st.velocity / 127;
@@ -870,7 +894,7 @@ export const App: React.FC = () => {
               const l = Math.min(1, chGain * Math.cos(panAngle) * 1.3);
               const r = Math.min(1, chGain * Math.sin(panAngle) * 1.3);
               const targetIns = Math.min(64, Math.max(0, ch.assignedMixerInsert));
-              const insStrip = mixer.inserts[targetIns];
+              const insStrip = curMix.inserts[targetIns];
               if (insStrip && !insStrip.muted) {
                 const faderGain = Math.pow(10, insStrip.faderVolumeDb / 20);
                 decayLevels[targetIns]![0] = Math.max(
@@ -926,10 +950,18 @@ export const App: React.FC = () => {
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [isPlaying, bpm, ppq, activePattern, channels, mixer.inserts]);
+  }, [isPlaying, bpm, ppq, engineClient]);
+
+  const handleAuditionChannel = useCallback(
+    (channelId: string, midiNote?: number) => {
+      void engineClient.triggerChannelNote(channelId, midiNote, 100).catch(() => {});
+    },
+    [engineClient],
+  );
 
   const handlePlayPause = useCallback(async () => {
     if (isPlaying) {
+      playbackStartMsRef.current = 0;
       if (isRecording) {
         const rec = await engineClient.stopRecording();
         if (rec) {
@@ -955,12 +987,14 @@ export const App: React.FC = () => {
       if (isRecording) {
         await engineClient.startRecording(songTick, 0);
       }
+      playbackStartMsRef.current = performance.now();
       const snap = await engineClient.play();
       setIsPlaying(snap.isPlaying);
     }
   }, [engineClient, isPlaying, isRecording, songTick, bpm, ppq]);
 
   const handleStop = useCallback(async () => {
+    playbackStartMsRef.current = 0;
     if (isRecording) {
       const rec = await engineClient.stopRecording();
       if (rec) {
@@ -1007,6 +1041,9 @@ export const App: React.FC = () => {
   const handleUpdateStep = useCallback(
     (channelId: string, stepIndex: number, patch: Partial<QlStep>) => {
       pushHistory();
+      if (patch.active) {
+        handleAuditionChannel(channelId);
+      }
       mutateActivePattern((pat) => {
         const existing = pat.channelData[channelId] ?? {
           channelId,
@@ -1027,7 +1064,7 @@ export const App: React.FC = () => {
         };
       });
     },
-    [mutateActivePattern, pushHistory],
+    [mutateActivePattern, pushHistory, handleAuditionChannel],
   );
 
   const handleUpdateChannel = useCallback(
@@ -1922,6 +1959,7 @@ export const App: React.FC = () => {
               onReplaceGenerator={handleReplaceGenerator}
               onDropWavPath={(chId, p) => void handleLoadWavPathForChannel(chId, p)}
               onAddChannel={() => handleAddGeneratorChannel("sampler")}
+              onAuditionChannel={handleAuditionChannel}
             />
           </FloatingWindow>
         )}
@@ -1943,6 +1981,7 @@ export const App: React.FC = () => {
               isPlaying={isPlaying}
               ppq={ppq}
               onToggleNote={handleTogglePianoRollNote}
+              onAuditionNote={(midiNote) => handleAuditionChannel(selectedChannel.id, midiNote)}
             />
           </FloatingWindow>
         )}
@@ -2462,7 +2501,8 @@ const PianoRollEditor: React.FC<{
   readonly isPlaying: boolean;
   readonly ppq: number;
   readonly onToggleNote: (stepIdx: number, midiNote: number, isSlide: boolean) => void;
-}> = React.memo(({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote }) => {
+  readonly onAuditionNote?: (midiNote: number) => void;
+}> = React.memo(({ channel, notes, stepCount, activeStep, isPlaying, ppq, onToggleNote, onAuditionNote }) => {
   const [slideMode, setSlideMode] = useState(false);
   const ticksPerStep = ppq / 4;
 
@@ -2479,7 +2519,7 @@ const PianoRollEditor: React.FC<{
           ▲ Slide Note Mode: {slideMode ? "ON" : "OFF"}
         </button>
         <span className="text-fl-dim">
-          Click grid cells to place/remove notes · Active notes trigger sample-accurate voices in the Rust engine
+          Click piano keys or grid cells to place & audition notes · Active notes trigger sample-accurate voices in the engine
         </span>
       </div>
       <div className="flex-1 overflow-auto fl-scroll">
@@ -2487,7 +2527,9 @@ const PianoRollEditor: React.FC<{
           {PIANO_NOTES.map((row) => (
             <div key={row.midi} className="flex items-center h-[20px] border-b border-black/40">
               <div
-                className={`w-[74px] h-full px-2 flex items-center justify-between text-[10px] font-mono shrink-0 border-r border-black/80 ${
+                onClick={() => onAuditionNote?.(row.midi)}
+                title={`Audition ${row.label}`}
+                className={`w-[74px] h-full px-2 flex items-center justify-between text-[10px] font-mono shrink-0 border-r border-black/80 cursor-pointer hover:brightness-125 select-none ${
                   row.black ? "bg-[#16181c] text-fl-dim" : "bg-[#2a2f37] text-fl-text"
                 }`}
               >
@@ -2504,7 +2546,10 @@ const PianoRollEditor: React.FC<{
                     <button
                       key={sIdx}
                       type="button"
-                      onClick={() => onToggleNote(sIdx, row.midi, slideMode)}
+                      onClick={() => {
+                        onToggleNote(sIdx, row.midi, slideMode);
+                        onAuditionNote?.(row.midi);
+                      }}
                       className={`w-[36px] h-[20px] border-r border-black/40 relative cursor-pointer ${
                         sIdx % 4 === 0 ? "border-l border-l-white/10" : ""
                       } ${isPlayhead ? "bg-white/10" : row.black ? "bg-[#1a1e24]" : "bg-[#21262d]"}`}

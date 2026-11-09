@@ -16,10 +16,10 @@ use crate::sampler::{
 use crate::scheduler::{NativeLookaheadScheduler, RealTimeAudioEngine};
 use crate::plugins::{PluginHostManager, SharedPluginHost};
 use crate::schemas::{
-    AudioSettingsSnapshot, EngineStatusSnapshot, PlayMode, PluginDescriptor,
+    AudioScheduledEventKind, AudioSettingsSnapshot, EngineStatusSnapshot, PlayMode, PluginDescriptor,
     PluginInstanceSummary, PpqResolution, QlChannel, QlMixerSend, QlMixerState, QlPattern,
     QlPlaylistState, RealTimeCommand, ScheduledAudioEventPod, TimeSignature, TimeStretchResult,
-    MAX_MIXER_INSERTS, MAX_MIXER_SENDS,
+    WaveformShape, MAX_MIXER_INSERTS, MAX_MIXER_SENDS,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -31,7 +31,7 @@ use std::thread;
 use std::time::Duration;
 use tauri::State;
 
-pub const DEFAULT_HARDWARE_BUFFER_FRAMES: u32 = 1024;
+pub const DEFAULT_HARDWARE_BUFFER_FRAMES: u32 = 512;
 
 pub struct SharedLookaheadState {
     pub scheduler: NativeLookaheadScheduler,
@@ -1009,6 +1009,64 @@ pub fn stretch_channel_sample(
     guard.loaded_samples[slot as usize] = Some(processed.clone());
     let _ = guard.sample_producer.push((slot, processed));
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn trigger_channel_note(
+    channel_id: String,
+    midi_note: Option<u8>,
+    velocity: Option<u8>,
+    state: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let guard = state.shared.lock().map_err(|e| e.to_string())?;
+    let cur_frame = state.current_frame_estimate.load(Ordering::Relaxed);
+
+    let maybe_ch = guard.channels.iter().find(|c| c.id == channel_id);
+    let (ch_index, assigned_insert, sample_slot, root_note, pan, vol_db, waveform) =
+        if let Some(ch) = maybe_ch {
+            (
+                ch.index,
+                ch.assigned_mixer_insert,
+                ch.sample_slot.unwrap_or(0xFF),
+                ch.root_midi_note,
+                ch.pan,
+                ch.volume_db,
+                ch.waveform,
+            )
+        } else {
+            (0, 1, 0, 60, 0.0, 0.0, WaveformShape::Sine)
+        };
+
+    let note = midi_note.unwrap_or(root_note);
+    let vel = velocity.unwrap_or(100);
+    let freq_hz = crate::dsp::midi_note_to_frequency_hz(note, 0.0);
+    let vel_norm = (vel as f32) / 127.0;
+    let gain_linear = (10.0_f32.powf(vol_db / 20.0) * vel_norm * 0.9).clamp(0.0, 2.0);
+
+    let pod = ScheduledAudioEventPod {
+        sample_frame: cur_frame,
+        duration_frames: 48000 * 2, // 2s audition envelope
+        channel_index: ch_index,
+        assigned_mixer_insert: assigned_insert,
+        voice_color_group: 0,
+        kind: AudioScheduledEventKind::NoteOn,
+        waveform,
+        sample_slot,
+        root_midi_note: root_note,
+        midi_note: note,
+        velocity: vel,
+        start_freq_hz: freq_hz,
+        target_freq_hz: freq_hz,
+        pan,
+        gain_linear,
+    };
+
+    if let Ok(midi_mgr) = state.midi_manager.lock() {
+        if let Ok(mut prod) = midi_mgr.event_producer.lock() {
+            let _ = prod.push(pod);
+        }
+    }
     Ok(())
 }
 
