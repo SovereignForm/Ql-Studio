@@ -862,11 +862,21 @@ export const App: React.FC = () => {
     [activePattern.id],
   );
 
-  // Fetch initial audio settings
+  // Fetch initial audio settings and auto-calibrate latency for the detected hardware
   useEffect(() => {
     void engineClient
       .getAudioSettings()
-      .then((s) => setAudioSettings(s))
+      .then((s) => {
+        setAudioSettings(s);
+        if (typeof window !== "undefined") {
+          const userSaved = localStorage.getItem("ql_visual_sync_offset_ms");
+          // If no custom manual override was saved, automatically calibrate for this soundcard
+          if (userSaved === null && s.sampleRate > 0 && s.bufferSizeFrames > 0) {
+            const autoHwDelay = Math.round(((s.bufferSizeFrames * 2) / s.sampleRate) * 1000);
+            setVisualSyncOffsetMs(autoHwDelay);
+          }
+        }
+      })
       .catch(() => {});
   }, [engineClient]);
 
@@ -2024,6 +2034,13 @@ export const App: React.FC = () => {
       try {
         const snap = await engineClient.setAudioBufferSize(bufFrames);
         setAudioSettings(snap);
+        if (snap.sampleRate > 0 && snap.bufferSizeFrames > 0) {
+          const autoHwDelay = Math.round(((snap.bufferSizeFrames * 2) / snap.sampleRate) * 1000);
+          setVisualSyncOffsetMs(autoHwDelay);
+          if (typeof window !== "undefined") {
+            localStorage.setItem("ql_visual_sync_offset_ms", String(autoHwDelay));
+          }
+        }
         setStatusMessage(
           `Audio engine reconfigured to Fixed(${snap.bufferSizeFrames}) frames @ ${snap.sampleRate} Hz (${((snap.bufferSizeFrames / snap.sampleRate) * 1000).toFixed(1)} ms latency)`,
         );
