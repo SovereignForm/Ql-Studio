@@ -577,6 +577,23 @@ export const App: React.FC = () => {
 
   const [windows, setWindows] = useState<Record<string, WindowState>>(defaultWindowsLayout);
 
+  const windowsOpen = useMemo(
+    () => ({
+      browser: windows.browser?.open ?? true,
+      rack: windows.rack?.open ?? true,
+      mixer: windows.mixer?.open ?? true,
+      pianoroll: windows.pianoroll?.open ?? false,
+      playlist: windows.playlist?.open ?? false,
+    }),
+    [
+      windows.browser?.open,
+      windows.rack?.open,
+      windows.mixer?.open,
+      windows.pianoroll?.open,
+      windows.playlist?.open,
+    ],
+  );
+
   const [insertLevels, setInsertLevels] = useState<readonly (readonly [number, number])[]>(
     () => Array.from({ length: 65 }, () => [0, 0] as const),
   );
@@ -886,10 +903,6 @@ export const App: React.FC = () => {
         const stepCount = curPat.stepCount || 16;
         const stepIdx = Math.floor(currentTick / ticksPerStep) % stepCount;
 
-        if (currentTick !== prevTick) {
-          prevTick = currentTick;
-          setSongTick(currentTick);
-        }
         if (stepIdx !== prevStep) {
           prevStep = stepIdx;
           setActiveStep(stepIdx);
@@ -931,9 +944,13 @@ export const App: React.FC = () => {
         }
       }
 
-      // Throttle meter updates to 30 FPS instead of 60/144 FPS to prevent UI thread lock
+      // Throttle UI and meter updates to 30 FPS to prevent event loop / CPU thread lock
       if (nowMs - lastUiThrottle > 32) {
         lastUiThrottle = nowMs;
+        if (isPlaying && currentTick !== prevTick) {
+          prevTick = currentTick;
+          setSongTick(currentTick);
+        }
         if (isPlaying || maxDecay > 0.002) {
           setInsertLevels(decayLevels.map(([l, r]) => [l, r] as const));
           setStats((prev) => ({
@@ -1355,6 +1372,24 @@ export const App: React.FC = () => {
       setStatusMessage(`Added ${nextChan.name}`);
     },
     [channels.length, pushHistory],
+  );
+
+  const handleDropWavForChannel = useCallback(
+    (chId: string, p: string) => {
+      void handleLoadWavPathForChannel(chId, p);
+    },
+    [handleLoadWavPathForChannel],
+  );
+
+  const handleAddDefaultChannel = useCallback(() => {
+    handleAddGeneratorChannel("sampler");
+  }, [handleAddGeneratorChannel]);
+
+  const handleAuditionSelectedNote = useCallback(
+    (midiNote: number) => {
+      handleAuditionChannel(selectedChannel.id, midiNote);
+    },
+    [handleAuditionChannel, selectedChannel.id],
   );
 
   const handleNewFromTemplate = useCallback(
@@ -1843,13 +1878,7 @@ export const App: React.FC = () => {
         utilities={utilities}
         stats={stats}
         nativeRuntime={engineClient.isNativeRuntime}
-        windowsOpen={{
-          browser: windows.browser?.open ?? true,
-          rack: windows.rack?.open ?? true,
-          mixer: windows.mixer?.open ?? true,
-          pianoroll: windows.pianoroll?.open ?? false,
-          playlist: windows.playlist?.open ?? false,
-        }}
+        windowsOpen={windowsOpen}
         canUndo={undoStack.length > 0}
         canRedo={redoStack.length > 0}
         midiConnectedDevice={midiStatus.connectedDevice}
@@ -1969,8 +1998,8 @@ export const App: React.FC = () => {
               onUpdateChannel={handleUpdateChannel}
               onChannelAction={handleChannelAction}
               onReplaceGenerator={handleReplaceGenerator}
-              onDropWavPath={(chId, p) => void handleLoadWavPathForChannel(chId, p)}
-              onAddChannel={() => handleAddGeneratorChannel("sampler")}
+              onDropWavPath={handleDropWavForChannel}
+              onAddChannel={handleAddDefaultChannel}
               onAuditionChannel={handleAuditionChannel}
             />
           </FloatingWindow>
@@ -1993,7 +2022,7 @@ export const App: React.FC = () => {
               isPlaying={isPlaying}
               ppq={ppq}
               onToggleNote={handleTogglePianoRollNote}
-              onAuditionNote={(midiNote) => handleAuditionChannel(selectedChannel.id, midiNote)}
+              onAuditionNote={handleAuditionSelectedNote}
             />
           </FloatingWindow>
         )}
