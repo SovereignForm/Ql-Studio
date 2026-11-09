@@ -21,9 +21,9 @@ jobs:
           - platform: 'windows-latest'
             args: ''
             target: 'x86_64-pc-windows-msvc'
-          - platform: 'macos-latest'
+          - platform: 'macos-13'
             args: '--target universal-apple-darwin'
-            target: 'aarch64-apple-darwin x86_64-apple-darwin'
+            target: 'x86_64-apple-darwin aarch64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
 
