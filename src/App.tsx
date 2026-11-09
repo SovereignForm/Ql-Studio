@@ -1385,13 +1385,6 @@ export const App: React.FC = () => {
     handleAddGeneratorChannel("sampler");
   }, [handleAddGeneratorChannel]);
 
-  const handleAuditionSelectedNote = useCallback(
-    (midiNote: number) => {
-      handleAuditionChannel(selectedChannel.id, midiNote);
-    },
-    [handleAuditionChannel, selectedChannel.id],
-  );
-
   const handleNewFromTemplate = useCallback(
     (template: ProjectTemplateId) => {
       pushHistory();
@@ -1842,6 +1835,13 @@ export const App: React.FC = () => {
 
   const selectedChannel =
     channels.find((c) => c.id === selectedChannelId) ?? channels[0]!;
+
+  const handleAuditionSelectedNote = useCallback(
+    (midiNote: number) => {
+      handleAuditionChannel(selectedChannel.id, midiNote);
+    },
+    [handleAuditionChannel, selectedChannel.id],
+  );
 
   return (
     <div className="h-screen w-screen flex flex-col bg-fl-base overflow-hidden select-none">
