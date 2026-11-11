@@ -27,7 +27,49 @@
 
 ---
 
+## 🎬 Video & Visual Walkthrough
+
+<p align="center">
+  <a href="https://github.com/SovereignForm/Ql-Studio/releases">
+    <img src="https://raw.githubusercontent.com/SovereignForm/Ql-Studio/main/docs/assets/studio_overview_banner.png" alt="QL Studio Workstation Showcase" width="100%" style="border-radius: 8px; border: 1px solid #333;" onerror="this.src='public/logo.svg'; this.width=240;" />
+  </a>
+</p>
+
+> 🎥 **Interactive DAW Feature Showcase**:
+> * **[Watch Quickstart Demo Video & Workflow Tutorial (YouTube / Video Hub)](https://github.com/SovereignForm/Ql-Studio/releases)**
+> * Live Multi-Track Arranging with Interactive Bezier Automation Curves
+> * Channel Rack Step Sequencer & PolyBLEP Synthesizer with Moog-Style Resonant Filter
+> * 64-Insert Real-Time Acyclic Routing Mixer with Zero-Latency DSP Plugins
+
+---
+
 ## ⚡ Key Highlights & Capabilities
+
+### 🎚️ Interactive Bezier Automation Curves (FL-Style Tension Handles)
+* **Smooth Mathematical Interpolation:** Spline-accurate quadratic Bezier tension curves ($t' = t^{\exp(-2.2 \times \text{tension})}$) with dynamic tension range from `-1.0` (exponential plunge) to `+1.0` (logarithmic ramp).
+* **Direct Timeline Manipulation:**
+  * **Double-click:** Insert new automation point at precise timeline tick and value.
+  * **Right-click:** Delete point instantly with automatic curve recalculation.
+  * **Middle tension handle:** Drag up or down to bend and shape the modulation curve.
+* **Modulation Target Selectors:** Control Master / Insert 1..64 faders, Channel volume, Channel pan, and resonant filter cutoffs in real time during playback.
+
+---
+
+### 🎹 PolyBLEP Synthesizer & Interactive ADSR Envelope Inspector
+* **Studio Sound Engine:** Built-in multi-mode oscillator synthesizer supporting Band-Limited PolyBLEP Sawtooth, Square (Pulse Width), Triangle, Sine, and White Noise.
+* **Interactive SVG ADSR Visualizer:** Real-time visual envelope editor for Attack, Decay, Sustain level, and Release time with live stage handles.
+* **Analog Ladder Filter:** 4-Pole Moog-style resonant filter (20 Hz – 20,000 Hz) with self-oscillation resonance Q (0.1 – 18.0) and FM phase modulation depth.
+* **Instant Audition Presets:** One-click presets including *"808 Deep Sub Bass"*, *"Acid 303 Lead"*, *"Lush Poly FM Pad"*, *"Punchy Kick"*, and *"Chiptune Pluck"* with live virtual piano auditioning.
+
+---
+
+### 🏛️ Built-In Studio DSP FX Suite (Rust Audio Core)
+1. **Lush Algorithmic Studio Reverb:** Schroeder-Moorer diffusion matrix with 4 parallel feedback comb filters and 2 series all-pass diffusion stages.
+2. **Tempo-Synced Stereo Ping-Pong Delay:** Cross-feedback echo alternating between left and right channels with high-frequency absorption damping.
+3. **Analog Tube Saturation & Overdrive:** Asymmetric non-linear transfer function modeling triode tube clipping and dynamic harmonic tilt.
+4. **PolyFM Filter Matrix:** 24dB steep analog resonant low-pass / band-pass / high-pass ladder circuit.
+
+---
 
 ### 🔌 VST3 & CLAP Third-Party Plugin Hosting & Dedicated Popout Native Windows
 * **Cross-Format Plugin Host (`vst3-host` & `clack-host`):** Scan standard system paths (`/usr/lib/vst3`, `~/.vst3`, `/Library/Audio/Plug-Ins/VST3`, `C:\Program Files\Common Files\VST3`) and host external third-party VST3 / CLAP synthesizers and effects (Serum, FabFilter, Vital, Kontakt, etc.).
@@ -64,6 +106,13 @@
   * **Novation Launchkey:** InControl faders 1..8 mapped directly to Mixer Inserts 1..8 fader levels.
 * **Sub-Millisecond Event Response:** Lock-free bypass routes hardware MIDI events straight to `RealTimeAudioEngine` without OS thread delay.
 * **Live MIDI Activity LED:** Real-time toolbar indicator blinks amber on keypress and displays the active note (`MIDI IN: #60 C5`).
+
+---
+
+### 🔄 Global Deep Undo / Redo Architecture
+* **Full Session State Preservation:** Captures channel configurations, pattern step notes, active clips across timeline tracks, and mixer fader/insert routings.
+* **Quick Keybindings:** `Ctrl + Z` for Undo, and `Ctrl + Y` or `Ctrl + Shift + Z` for Redo.
+* **Zero-Lag Synchronization:** Seamlessly synchronizes state changes between frontend state and backend Rust Kahn DAG graphs.
 
 ---
 
@@ -115,7 +164,7 @@
 | **`F11`** | Toggle Borderless Fullscreen Workstation |
 | **`Ctrl + E`** | Export Pattern / Song Mixdown as WAV |
 | **`Ctrl + S`** | Save Project State (`.qlproj.json`) |
-| **`Ctrl + Z` / `Ctrl + Y`** | Undo / Redo |
+| **`Ctrl + Z` / `Ctrl + Y`** | Global Deep Undo / Redo |
 
 ---
 
@@ -159,8 +208,8 @@ cargo build --release --manifest-path src-tauri/Cargo.toml
 
 Pre-built binaries are generated automatically on release:
 
-- 🐧 **Linux:** `.deb` (Debian, Ubuntu, Mint, Pop!_OS)
-- 🪟 **Windows:** `.exe` (NSIS Installer) & `.msi`
+- 🐧 **Linux:** `.deb` (Debian, Ubuntu, Mint, Pop!_OS) & `.AppImage`
+- 🪟 **Windows:** `.exe` (NSIS Installer) & `.msi` (Windows Installer)
 - 🍏 **macOS:** `.dmg` (Universal binary: Apple Silicon M1/M2/M3/M4 & Intel x86_64)
 
 👉 Visit the [Releases Page](https://github.com/SovereignForm/Ql-Studio/releases) to download the latest desktop packages.
@@ -183,7 +232,4 @@ Pre-built binaries are generated automatically on release:
 
 ## 📄 License
 
-This project is licensed under the **GNU General Public License, Version 3 (GPL-3.0-or-later)** with an explicit **Audio Plugin Exception** ([LICENSE](LICENSE)).
-
-### Audio Plugin Exception Clause
-As a special exception to the GNU GPLv3, the copyright holders of Ql Studio grant explicit permission to link, combine, and host third-party audio plugins, SDK interfaces, and software libraries (including, but not limited to, **VST, VST3, CLAP, LV2, and AudioUnit** formats) regardless of the license terms of those plugins, ensuring full freedom to use both open-source and commercial proprietary instruments and effects within Ql Studio, while guaranteeing that Ql Studio's own core engine remains 100% free and open-source forever.
+QL Studio is licensed under the **GNU General Public License v3.0 (GPL-3.0)** with **Plugin Hosting & Dynamic Link Exceptions** allowing proprietary VST3 / CLAP plugins to load seamlessly.

@@ -50,14 +50,41 @@ jobs:
       - name: Install Linux system dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          # Fix Azure mirror DNS resolution failure (replace azure.archive.ubuntu.com with official archive.ubuntu.com)
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|http://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
-          sudo sed -i 's|https://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt
-          fi
-          sudo apt-get update --fix-missing
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libpipewire-0.3-dev libfuse2 squashfs-tools zsync appstream desktop-file-utils
+          # Robust DNS setup: use Google & Cloudflare DNS to guarantee resolution in runner
+          echo "nameserver 8.8.8.8" | sudo tee /etc/resolv.conf >/dev/null
+          echo "nameserver 1.1.1.1" | sudo tee -a /etc/resolv.conf >/dev/null
+
+          # Switch from problematic mirror list to canonical direct sources.list
+          sudo rm -f /etc/apt/apt-mirrors.txt
+          sudo rm -f /etc/apt/sources.list.d/ubuntu.sources 2>/dev/null || true
+          cat << 'EOF' | sudo tee /etc/apt/sources.list
+          deb http://archive.ubuntu.com/ubuntu jammy main restricted universe multiverse
+          deb http://archive.ubuntu.com/ubuntu jammy-updates main restricted universe multiverse
+          deb http://archive.ubuntu.com/ubuntu jammy-backports main restricted universe multiverse
+          deb http://security.ubuntu.com/ubuntu jammy-security main restricted universe multiverse
+          EOF
+
+          for i in 1 2 3; do
+            sudo apt-get clean && sudo apt-get update && break || sleep 5
+          done
+
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libasound2-dev \
+            libpipewire-0.3-dev \
+            libfuse2 \
+            squashfs-tools \
+            zsync \
+            appstream \
+            desktop-file-utils
           # Allow appimage tools to run in non-root unprivileged container environments
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
