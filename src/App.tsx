@@ -208,33 +208,6 @@ const INITIAL_CHANNELS: QlChannel[] = [
     sampleSlot: 3,
     samplePath: "samples/snare_808.wav",
   },
-  {
-    id: "ch_4",
-    index: 4,
-    name: "Saw Reese Bass",
-    colorHex: "#9b5de5",
-    generator: {
-      kind: "oscillator_synth",
-      oscillators: [
-        {
-          waveform: "sawtooth",
-          coarseSemitones: 0,
-          fineCents: 0,
-          mixLevel: 1.0,
-          pulseWidth: 0.5,
-        },
-      ],
-    },
-    pan: 0.0,
-    volumeDb: -2.0,
-    rootMidiNote: 48,
-    pitchSemitones: 0,
-    pitchCents: 0,
-    swingMultiplier: 1.0,
-    muted: false,
-    solo: false,
-    assignedMixerInsert: 5,
-  },
 ];
 
 function createDefaultPattern(
@@ -254,83 +227,24 @@ function createDefaultPattern(
             1: [4, 12],
             2: [0, 2, 4, 6, 8, 10, 12, 14],
             3: [12],
-            4: [],
           }
         : {
             0: [0, 6, 10],
             1: [4, 12],
             2: [0, 2, 3, 4, 6, 8, 10, 12, 14, 15],
             3: [4, 12],
-            4: [0, 3, 10],
           };
 
   channels.forEach((ch, idx) => {
     const hits = presetSteps[idx] ?? [];
-    const isReese = ch.name.toLowerCase().includes("reese");
     const steps = Array.from({ length: 16 }, (_, sIdx) =>
-      createStep(
-        hits.includes(sIdx),
-        sIdx % 4 === 0 ? 116 : 96,
-        isReese ? 3.8 : 0.8, // Reese Bass sustains across full beats for warm deep sub fullness
-      ),
+      createStep(hits.includes(sIdx), sIdx % 4 === 0 ? 116 : 96, 0.8),
     );
-
-    // For Reese Bass, also provide continuous sustained Piano Roll notes (full bar / multi-beat sustain)
-    const notes: QlPianoRollNote[] =
-      isReese && hits.length > 0
-        ? [
-            {
-              id: "note_reese_1",
-              startTick: 0,
-              durationTicks: 72, // 3 full beats sustain (72 ticks @ 96 PPQ)
-              midiNote: 36, // C2 Deep Sub Reese
-              velocity: 110,
-              releaseVelocity: 64,
-              finePan: 0,
-              finePitchCents: 0,
-              filterCutoffNorm: 0.3,
-              filterResonanceNorm: 0.4,
-              voiceColorGroup: 0,
-              isSlideNote: false,
-              isPortaNote: false,
-            },
-            {
-              id: "note_reese_2",
-              startTick: 96,
-              durationTicks: 48, // 2 full beats sustain
-              midiNote: 34, // A#1 Deep glide transition
-              velocity: 105,
-              releaseVelocity: 64,
-              finePan: 0,
-              finePitchCents: 0,
-              filterCutoffNorm: 0.3,
-              filterResonanceNorm: 0.4,
-              voiceColorGroup: 0,
-              isSlideNote: false,
-              isPortaNote: false,
-            },
-            {
-              id: "note_reese_3",
-              startTick: 240,
-              durationTicks: 96, // 1 bar sustain resolving to root
-              midiNote: 36, // C2
-              velocity: 115,
-              releaseVelocity: 64,
-              finePan: 0,
-              finePitchCents: 0,
-              filterCutoffNorm: 0.3,
-              filterResonanceNorm: 0.4,
-              voiceColorGroup: 0,
-              isSlideNote: false,
-              isPortaNote: false,
-            },
-          ]
-        : [];
 
     channelData[ch.id] = {
       channelId: ch.id,
       steps,
-      notes,
+      notes: [],
     };
   });
 
@@ -1002,9 +916,12 @@ export const App: React.FC = () => {
     playbackStartMsRef.current = performance.now();
     setSongTick(0);
     setActiveStep(0);
+    if (nextMode === "song") {
+      await engineClient.updateArrangement(playlist, patterns).catch(() => {});
+    }
     await engineClient.setPlayMode(nextMode).catch(() => {});
     setStatusMessage(`Switched playback to ${nextMode.toUpperCase()} mode.`);
-  }, [engineClient]);
+  }, [engineClient, playlist, patterns]);
 
   const focusWindow = useCallback((id: string) => {
     setWindows((prev) => {
@@ -1156,9 +1073,14 @@ export const App: React.FC = () => {
         const stepIdx = Math.floor(currentTick / ticksPerStep) % stepCount;
 
         // Smooth 60 FPS playhead movement across Playlist and PianoRoll
-        if (currentTick !== prevTick) {
-          prevTick = currentTick;
-          setSongTick(currentTick);
+        const curPlay = playlistRef.current || playlist;
+        const isSongMode = mode === "song";
+        const songLoopEnd = curPlay.loopEndTick || 1536;
+        const displayTick = isSongMode ? (currentTick % songLoopEnd) : currentTick;
+
+        if (displayTick !== prevTick) {
+          prevTick = displayTick;
+          setSongTick(displayTick);
         }
 
         if (stepIdx !== prevStep) {
@@ -1606,11 +1528,33 @@ export const App: React.FC = () => {
         }));
       } else if (action === "delete" && channels.length > 1) {
         pushHistory();
+        const targetChan = channels.find((c) => c.id === channelId);
         const remaining = channels.filter((c) => c.id !== channelId);
         setChannels(remaining);
+        setPatterns((prev) =>
+          prev.map((pat) => {
+            const nextData = { ...pat.channelData };
+            delete nextData[channelId];
+            return {
+              ...pat,
+              channelData: nextData,
+            };
+          }),
+        );
         if (selectedChannelId === channelId) {
           setSelectedChannelId(remaining[0]?.id ?? "ch_0");
         }
+        if (targetChan) {
+          void engineClient.silenceChannel(targetChan.index).catch(() => {});
+        }
+        const sanitizedActivePat = {
+          ...activePattern,
+          channelData: Object.fromEntries(
+            Object.entries(activePattern.channelData).filter(([k]) => k !== channelId),
+          ),
+        };
+        void engineClient.updatePattern(sanitizedActivePat, remaining).catch(() => {});
+        setStatusMessage(`Deleted channel ${targetChan?.name ?? channelId}.`);
       }
     },
     [

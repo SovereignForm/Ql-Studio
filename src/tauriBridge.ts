@@ -285,6 +285,7 @@ export class QlNativeEngineClient {
   private webAudioStepIndex = 0;
   private webAudioNextStepTime = 0;
   private webAudioPlaybackStartAudioTime = 0;
+  private activeWebAudioNodes: { stop: () => void; channelId: string }[] = [];
 
   private hwClockAnchor = {
     audibleSec: 0,
@@ -376,7 +377,19 @@ export class QlNativeEngineClient {
       gainNode.gain.exponentialRampToValueAtTime(0.001, now + Math.max(0.08, stepDurSec * gateRatio));
       osc.connect(gainNode);
       osc.start(now);
-      osc.stop(now + Math.max(0.09, stepDurSec * gateRatio + 0.01));
+      const stopTime = now + Math.max(0.09, stepDurSec * gateRatio + 0.01);
+      osc.stop(stopTime);
+      this.activeWebAudioNodes.push({
+        channelId: ch.id,
+        stop: () => {
+          try {
+            gainNode.gain.cancelScheduledValues(ctx.currentTime);
+            gainNode.gain.setValueAtTime(0, ctx.currentTime);
+            osc.stop(ctx.currentTime + 0.005);
+            osc.disconnect();
+          } catch {}
+        },
+      });
     }
   }
 
@@ -529,6 +542,44 @@ export class QlNativeEngineClient {
       this.webAudioTimer = null;
     }
     this.webAudioStepIndex = 0;
+    for (const node of this.activeWebAudioNodes) {
+      try {
+        node.stop();
+      } catch {}
+    }
+    this.activeWebAudioNodes = [];
+  }
+
+  public async silenceChannel(channelIndex: number): Promise<void> {
+    if (!this.isNativeRuntime) {
+      const ch = this.webAudioChannels[channelIndex];
+      if (ch) {
+        this.activeWebAudioNodes = this.activeWebAudioNodes.filter((n) => {
+          if (n.channelId === ch.id) {
+            try {
+              n.stop();
+            } catch {}
+            return false;
+          }
+          return true;
+        });
+      }
+      return;
+    }
+    return invoke<void>("silence_channel", { channelIndex });
+  }
+
+  public async silenceAllVoices(): Promise<void> {
+    if (!this.isNativeRuntime) {
+      for (const node of this.activeWebAudioNodes) {
+        try {
+          node.stop();
+        } catch {}
+      }
+      this.activeWebAudioNodes = [];
+      return;
+    }
+    return invoke<void>("silence_all_voices");
   }
 
   public async play(): Promise<NativeEngineStatusSnapshot> {

@@ -199,6 +199,21 @@ impl NativeLookaheadScheduler {
                 return 0;
             }
 
+            let loop_start = self.playlist.loop_start_tick.unwrap_or(0);
+            let default_end = self
+                .playlist
+                .clips
+                .iter()
+                .map(|c| c.start_tick + c.length_ticks)
+                .max()
+                .unwrap_or(384)
+                .max(384);
+            let loop_end = match self.playlist.loop_end_tick {
+                Some(end) if end > loop_start => end,
+                _ => default_end,
+            };
+            let loop_len = (loop_end - loop_start).max(1);
+
             loop {
                 let tick_sample_frame =
                     ((self.next_unscheduled_tick as f64) * self.metrics.samples_per_tick).round() as u64;
@@ -206,18 +221,18 @@ impl NativeLookaheadScheduler {
                     break;
                 }
 
-                if let Some(loop_end) = self.playlist.loop_end_tick {
-                    if self.next_unscheduled_tick >= loop_end {
-                        self.next_unscheduled_tick = self.playlist.loop_start_tick.unwrap_or(0);
-                    }
-                }
+                let song_tick = if self.next_unscheduled_tick < loop_start {
+                    self.next_unscheduled_tick
+                } else {
+                    loop_start + ((self.next_unscheduled_tick - loop_start) % loop_len)
+                };
 
                 for clip in &self.playlist.clips {
                     if clip.muted {
                         continue;
                     }
-                    if self.next_unscheduled_tick >= clip.start_tick
-                        && self.next_unscheduled_tick < clip.start_tick + clip.length_ticks
+                    if song_tick >= clip.start_tick
+                        && song_tick < clip.start_tick + clip.length_ticks
                     {
                         if clip.kind == "pattern" {
                             let pat = self
@@ -227,7 +242,7 @@ impl NativeLookaheadScheduler {
                             let pat_len =
                                 (pat.step_count * self.metrics.ticks_per_sixteenth).max(1) as u64;
                             let local_tick =
-                                ((self.next_unscheduled_tick - clip.start_tick + clip.offset_ticks)
+                                ((song_tick - clip.start_tick + clip.offset_ticks)
                                     % pat_len) as u32;
                             scheduled_count += schedule_channel_tick_events(
                                 tick_sample_frame,
@@ -240,7 +255,7 @@ impl NativeLookaheadScheduler {
                                 event_producer,
                             );
                         } else if clip.kind == "audio" {
-                            if self.next_unscheduled_tick == clip.start_tick {
+                            if song_tick == clip.start_tick {
                                 if let Some(ch) = channels.iter().find(|c| c.id == clip.reference_id) {
                                     let ch_gain = db_to_linear(ch.volume_db);
                                     let sample_slot = ch.sample_slot.unwrap_or(0);
@@ -695,6 +710,20 @@ impl RealTimeAudioEngine {
                 while self.event_consumer.pop().is_ok() {}
                 for v in &mut self.voices {
                     v.active = false;
+                }
+            }
+            RealTimeCommand::SilenceChannel { channel_index } => {
+                for v in &mut self.voices {
+                    if v.channel_index == channel_index {
+                        v.active = false;
+                        v.remaining_frames = 0;
+                    }
+                }
+            }
+            RealTimeCommand::SilenceAllVoices => {
+                for v in &mut self.voices {
+                    v.active = false;
+                    v.remaining_frames = 0;
                 }
             }
             RealTimeCommand::SetInsertParams {

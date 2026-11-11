@@ -222,6 +222,10 @@ pub enum RealTimeCommand {
     Seek {
         target_frame: u64,
     },
+    SilenceChannel {
+        channel_index: u16,
+    },
+    SilenceAllVoices,
     SetInsertParams {
         insert_index: u8,
         pan: f32,

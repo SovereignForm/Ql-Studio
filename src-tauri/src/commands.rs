@@ -832,17 +832,6 @@ pub fn set_play_mode(
     let _ = guard.command_producer.push(RealTimeCommand::Seek { target_frame: 0 });
     state.current_frame_estimate.store(0, Ordering::Release);
 
-    if guard.scheduler.is_playing {
-        let SharedLookaheadState {
-            scheduler,
-            pattern,
-            channels,
-            event_producer,
-            ..
-        } = &mut *guard;
-        scheduler.advance_lookahead(0, pattern, channels, event_producer);
-    }
-
     Ok(snapshot_from_guard(&guard, &state))
 }
 
@@ -855,6 +844,25 @@ pub fn update_arrangement(
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.scheduler.update_arrangement(playlist, patterns);
     Ok(snapshot_from_guard(&guard, &state))
+}
+
+#[tauri::command]
+pub fn silence_channel(
+    channel_index: u16,
+    state: State<'_, QlEngineController>,
+) -> Result<(), String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    let _ = guard
+        .command_producer
+        .push(RealTimeCommand::SilenceChannel { channel_index });
+    Ok(())
+}
+
+#[tauri::command]
+pub fn silence_all_voices(state: State<'_, QlEngineController>) -> Result<(), String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    let _ = guard.command_producer.push(RealTimeCommand::SilenceAllVoices);
+    Ok(())
 }
 
 #[tauri::command]

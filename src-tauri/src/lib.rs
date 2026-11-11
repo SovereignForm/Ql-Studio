@@ -37,6 +37,8 @@ pub fn run() {
             commands::set_bpm,
             commands::set_swing,
             commands::set_play_mode,
+            commands::silence_channel,
+            commands::silence_all_voices,
             commands::update_pattern,
             commands::update_arrangement,
             commands::update_mixer_graph,
@@ -395,9 +397,17 @@ mod tests {
             play_mode: PlayMode::Song,
         };
 
+        let channels = [channel];
         scheduler.update_arrangement(playlist, vec![pat1.clone(), pat2]);
-        let count = scheduler.advance_lookahead(0, &pat1, &[channel], &mut ev_prod);
+        let count = scheduler.advance_lookahead(0, &pat1, &channels, &mut ev_prod);
         assert!(count >= 1, "Song mode lookahead should schedule clips");
+
+        // Advance past loop_end_tick (768 ticks) to verify smooth infinite loop wrapping without buffer overflow
+        let samples_per_tick = scheduler.metrics.samples_per_tick;
+        let loop_end_frame = (768.0 * samples_per_tick) as u64;
+        let count2 = scheduler.advance_lookahead(loop_end_frame, &pat1, &channels, &mut ev_prod);
+        assert!(count2 >= 1, "Song mode should cleanly loop past loop_end_tick");
+        assert!(!ev_prod.is_full(), "Ring buffer must never overflow due to runaway looping");
     }
 
     #[test]
