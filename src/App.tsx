@@ -89,11 +89,12 @@ import {
   type WindowState,
 } from "./ui/FloatingWindow.tsx";
 
-function createStep(active = false, velocity = 100): QlStep {
+function createStep(active = false, velocity = 100, gateRatio = 0.8): QlStep {
   return {
     ...EMPTY_STEP,
     active,
     velocity,
+    gateRatio,
   };
 }
 
@@ -264,13 +265,71 @@ function createDefaultPattern(
 
   channels.forEach((ch, idx) => {
     const hits = presetSteps[idx] ?? [];
+    const isReese = ch.name.toLowerCase().includes("reese");
     const steps = Array.from({ length: 16 }, (_, sIdx) =>
-      createStep(hits.includes(sIdx), sIdx % 4 === 0 ? 116 : 96),
+      createStep(
+        hits.includes(sIdx),
+        sIdx % 4 === 0 ? 116 : 96,
+        isReese ? 3.8 : 0.8, // Reese Bass sustains across full beats for warm deep sub fullness
+      ),
     );
+
+    // For Reese Bass, also provide continuous sustained Piano Roll notes (full bar / multi-beat sustain)
+    const notes: QlPianoRollNote[] =
+      isReese && hits.length > 0
+        ? [
+            {
+              id: "note_reese_1",
+              startTick: 0,
+              durationTicks: 72, // 3 full beats sustain (72 ticks @ 96 PPQ)
+              midiNote: 36, // C2 Deep Sub Reese
+              velocity: 110,
+              releaseVelocity: 64,
+              finePan: 0,
+              finePitchCents: 0,
+              filterCutoffNorm: 0.3,
+              filterResonanceNorm: 0.4,
+              voiceColorGroup: 0,
+              isSlideNote: false,
+              isPortaNote: false,
+            },
+            {
+              id: "note_reese_2",
+              startTick: 96,
+              durationTicks: 48, // 2 full beats sustain
+              midiNote: 34, // A#1 Deep glide transition
+              velocity: 105,
+              releaseVelocity: 64,
+              finePan: 0,
+              finePitchCents: 0,
+              filterCutoffNorm: 0.3,
+              filterResonanceNorm: 0.4,
+              voiceColorGroup: 0,
+              isSlideNote: false,
+              isPortaNote: false,
+            },
+            {
+              id: "note_reese_3",
+              startTick: 240,
+              durationTicks: 96, // 1 bar sustain resolving to root
+              midiNote: 36, // C2
+              velocity: 115,
+              releaseVelocity: 64,
+              finePan: 0,
+              finePitchCents: 0,
+              filterCutoffNorm: 0.3,
+              filterResonanceNorm: 0.4,
+              voiceColorGroup: 0,
+              isSlideNote: false,
+              isPortaNote: false,
+            },
+          ]
+        : [];
+
     channelData[ch.id] = {
       channelId: ch.id,
       steps,
-      notes: [],
+      notes,
     };
   });
 
