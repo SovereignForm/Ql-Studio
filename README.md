@@ -27,25 +27,6 @@
 
 ---
 
-## 🎬 Live In-App Video & Interactive Walkthrough
-
-<p align="center">
-  <img src="docs/assets/ql_studio_demo.gif" alt="QL Studio Live DAW In-App Walkthrough" width="100%" style="border-radius: 8px; border: 1px solid rgba(255,133,0,0.3); box-shadow: 0 0 20px rgba(0,0,0,0.8);" />
-</p>
-
-<p align="center">
-  <a href="docs/assets/ql_studio_demo.mp4">▶️ <b>Download & Watch High-Quality 60FPS In-App MP4 Video</b></a> &bull;
-  <a href="https://github.com/SovereignForm/Ql-Studio/releases">📦 <b>Download Desktop Builds</b></a>
-</p>
-
-> 🎥 **Live Workstation Demonstration Highlights:**
-> * **Channel Rack & Step Sequencer:** Dynamic 16-step beat sequencing with velocity shading and PolyBLEP synth auditioning.
-> * **Playlist Arranger (F5):** Smooth 60 FPS playhead movement, multi-track audio waveform timeline, and interactive Bezier tension automation curves.
-> * **Piano Roll Editor (F7):** Interactive note placing, slide notes with logarithmic pitch bends, and MIDI note auditioning.
-> * **64-Insert Mixer (F9):** Real-time peak meters with logarithmic decay, insert effects routing, and master bus limiter.
-
----
-
 ## ⚡ Key Highlights & Capabilities
 
 ### 🎚️ Interactive Bezier Automation Curves (FL-Style Tension Handles)
