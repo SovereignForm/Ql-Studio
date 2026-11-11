@@ -21,9 +21,9 @@ jobs:
           - platform: 'windows-latest'
             args: ''
             target: 'x86_64-pc-windows-msvc'
-          - platform: 'macos-13'
+          - platform: 'macos-latest'
             args: '--target universal-apple-darwin'
-            target: 'x86_64-apple-darwin aarch64-apple-darwin'
+            target: 'x86_64-apple-darwin,aarch64-apple-darwin'
 
     runs-on: ${{ matrix.platform }}
 
@@ -41,6 +41,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Add Rust targets for macOS universal build
+        if: runner.os == 'macOS'
+        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
@@ -188,20 +192,33 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Clean legacy assets from release
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Clean legacy Ql.Studio_* files from v1.0.0 release if present
+          REL_INFO=$(curl -sSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/releases/tags/v1.0.0")
+          ASSET_IDS=$(echo "$REL_INFO" | jq -r '.assets[]? | select(.name | startswith("Ql.Studio")) | .id')
+          for aid in $ASSET_IDS; do
+            echo "Deleting legacy release asset ID: $aid"
+            curl -sSL -X DELETE -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/releases/assets/$aid" || true
+          done
+
       - name: Build Tauri Desktop Application
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: v__VERSION__
-          releaseName: 'Ql Studio v__VERSION__'
+          releaseName: 'QuickLayer Studio v__VERSION__'
           releaseBody: |
-            ## Ql Studio — Professional Pattern-Based DAW Engine
+            ## QuickLayer (QL) Studio — Professional Digital Audio Workstation
+            *Layer, Compose and Master with Zero Latency*
 
-            ### Release Assets:
+            ### Official Release Assets:
             - **Linux**: AppImage / .deb
             - **Windows**: .msi / .exe (x64 setup)
-            - **macOS**: .dmg / .app (Apple Silicon & Universal)
+            - **macOS**: .dmg / .app (Universal: Apple Silicon & Intel)
 
             ### Features:
             - **Zero-Allocation Audio Thread**: Built with Rust `cpal` + wait-free `rtrb` ring buffers.
