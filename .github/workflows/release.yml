@@ -50,8 +50,14 @@ jobs:
       - name: Install Linux system dependencies (Ubuntu)
         if: matrix.platform == 'ubuntu-22.04'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libpipewire-0.3-dev libfuse2 squashfs-tools zsync appstream desktop-file-utils
+          # Fix Azure mirror DNS resolution failure (replace azure.archive.ubuntu.com with official archive.ubuntu.com)
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu/|http://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          sudo sed -i 's|https://azure.archive.ubuntu.com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's|azure.archive.ubuntu.com|archive.ubuntu.com|g' /etc/apt/apt-mirrors.txt
+          fi
+          sudo apt-get update --fix-missing
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev libasound2-dev libpipewire-0.3-dev libfuse2 squashfs-tools zsync appstream desktop-file-utils
           # Allow appimage tools to run in non-root unprivileged container environments
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 2>/dev/null || true
 
