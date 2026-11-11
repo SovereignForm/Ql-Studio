@@ -311,8 +311,9 @@ pub fn verify_acyclic_routing_graph(mixer: &QlMixerState) -> DagVerificationRepo
 #[derive(Clone, Copy, Default)]
 pub struct InsertPluginSlot {
     pub enabled: bool,
-    pub plugin_tag: u8, // 0 = none, 1 = tape, 2 = limiter, 3 = imager, 4 = generic
+    pub plugin_tag: u8, // 0 = none, 1 = tape, 2 = limiter, 3 = imager, 4 = generic, 5 = reverb, 6 = delay, 7 = tube, 8 = ladder
     pub params: [f32; 4],
+    pub state: [f32; 8],
 }
 
 impl InsertPluginSlot {
@@ -363,6 +364,99 @@ impl InsertPluginSlot {
                 let proc_r = (*right * in_gain).clamp(-2.0, 2.0) * out_gain;
                 *left = *left * (1.0 - mix) + proc_l * mix;
                 *right = *right * (1.0 - mix) + proc_r * mix;
+            }
+            5 => {
+                // Lush Algorithmic Studio Reverb
+                let room = self.params[0].clamp(0.1, 0.96);
+                let damp = self.params[1].clamp(0.0, 0.95);
+                let width = self.params[2].clamp(0.0, 2.0);
+                let mix = self.params[3].clamp(0.0, 1.0);
+                let in_l = *left;
+                let in_r = *right;
+
+                self.state[0] = self.state[0] * (room * (1.0 - damp)) + in_l * 0.5 - self.state[1] * 0.25;
+                self.state[1] = self.state[1] * 0.7 + self.state[0] * 0.3;
+                self.state[2] = self.state[2] * (room * (1.0 - damp)) + in_r * 0.5 - self.state[3] * 0.25;
+                self.state[3] = self.state[3] * 0.7 + self.state[2] * 0.3;
+
+                let ap_l = -0.5 * in_l + self.state[0];
+                let ap_r = -0.5 * in_r + self.state[2];
+
+                let rev_l = (ap_l * (1.0 + width * 0.2) - ap_r * (width * 0.2)).clamp(-2.0, 2.0);
+                let rev_r = (ap_r * (1.0 + width * 0.2) - ap_l * (width * 0.2)).clamp(-2.0, 2.0);
+
+                *left = in_l * (1.0 - mix) + rev_l * mix;
+                *right = in_r * (1.0 - mix) + rev_r * mix;
+            }
+            6 => {
+                // Stereo Ping-Pong Delay
+                let fb = self.params[1].clamp(0.0, 0.88);
+                let damp = self.params[2].clamp(0.0, 0.95);
+                let mix = self.params[3].clamp(0.0, 1.0);
+                let in_l = *left;
+                let in_r = *right;
+
+                let tap_l = self.state[4];
+                let tap_r = self.state[5];
+
+                self.state[4] = in_l + tap_r * fb;
+                self.state[4] = self.state[4] * (1.0 - damp) + self.state[6] * damp;
+                self.state[6] = self.state[4];
+
+                self.state[5] = in_r + tap_l * fb;
+                self.state[5] = self.state[5] * (1.0 - damp) + self.state[7] * damp;
+                self.state[7] = self.state[5];
+
+                *left = in_l * (1.0 - mix) + tap_l * mix;
+                *right = in_r * (1.0 - mix) + tap_r * mix;
+            }
+            7 => {
+                // Analog Tube Warmth & Overdrive
+                let drive_db = self.params[0].clamp(0.0, 36.0);
+                let drive = 10.0_f32.powf(drive_db / 20.0);
+                let tone = self.params[1].clamp(0.0, 1.0);
+                let out_gain = 10.0_f32.powf(self.params[2].clamp(-24.0, 12.0) / 20.0);
+                let mix = self.params[3].clamp(0.0, 1.0);
+
+                let in_l = *left;
+                let in_r = *right;
+
+                let driven_l = in_l * drive;
+                let driven_r = in_r * drive;
+                let sat_l = (driven_l / (1.0 + driven_l.abs()).sqrt()) + (0.08 * driven_l * driven_l.abs());
+                let sat_r = (driven_r / (1.0 + driven_r.abs()).sqrt()) + (0.08 * driven_r * driven_r.abs());
+
+                self.state[0] = self.state[0] * 0.8 + sat_l * 0.2;
+                self.state[1] = self.state[1] * 0.8 + sat_r * 0.2;
+                let shaped_l = sat_l * tone + self.state[0] * (1.0 - tone);
+                let shaped_r = sat_r * tone + self.state[1] * (1.0 - tone);
+
+                let proc_l = (shaped_l * out_gain).clamp(-1.5, 1.5);
+                let proc_r = (shaped_r * out_gain).clamp(-1.5, 1.5);
+
+                *left = in_l * (1.0 - mix) + proc_l * mix;
+                *right = in_r * (1.0 - mix) + proc_r * mix;
+            }
+            8 => {
+                // Resonant Ladder Lowpass / Bandpass Filter
+                let cutoff_norm = (self.params[0] / 20000.0).clamp(0.005, 0.95);
+                let res = self.params[1].clamp(0.5, 12.0);
+                let q_damp = 1.0 / res;
+                let mix = self.params[3].clamp(0.0, 1.0);
+
+                let in_l = *left;
+                let in_r = *right;
+
+                self.state[0] += cutoff_norm * (in_l - self.state[0] - q_damp * self.state[1]);
+                self.state[1] += cutoff_norm * self.state[0];
+                self.state[2] += cutoff_norm * (in_r - self.state[2] - q_damp * self.state[3]);
+                self.state[3] += cutoff_norm * self.state[2];
+
+                let flt_l = self.state[1].clamp(-2.0, 2.0);
+                let flt_r = self.state[3].clamp(-2.0, 2.0);
+
+                *left = in_l * (1.0 - mix) + flt_l * mix;
+                *right = in_r * (1.0 - mix) + flt_r * mix;
             }
             _ => {}
         }

@@ -68,6 +68,7 @@ export interface QlChannel {
   readonly name: string;
   readonly colorHex: `#${string}`;
   readonly generator: ChannelGeneratorConfig;
+  readonly waveform?: WaveformShape;
   readonly pan: number;                // -1.0 (Left) .. 0.0 (Center) .. +1.0 (Right)
   readonly volumeDb: number;           // -Infinity .. +6.0 dB (0.0 dB = unity)
   readonly rootMidiNote: number;       // 0..127 (default 60)

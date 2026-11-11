@@ -550,19 +550,47 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
             )}
 
             {clip.kind === "automation" && (
-              <div className="w-full h-full relative">
-                <svg className="w-full h-full" preserveAspectRatio="none">
-                  <path
-                    d="M 0 25 Q 30 5, 60 20 T 120 10 T 200 25"
-                    fill="none"
-                    stroke="#38bdf8"
-                    strokeWidth="2"
-                  />
-                  <circle cx="0" cy="25" r="3" fill="#ffffff" />
-                  <circle cx="60" cy="20" r="3" fill="#ffffff" />
-                  <circle cx="120" cy="10" r="3" fill="#ffffff" />
-                </svg>
-              </div>
+              <InteractiveAutomationCurve
+                clip={clip}
+                autoClip={
+                  playlist.automationClips?.find((a) => a.id === clip.referenceId) ?? {
+                    id: clip.referenceId,
+                    name: clip.name,
+                    targetType: "mixer_fader",
+                    targetId: "0",
+                    points: [
+                      { tick: 0, value: 0.8, tension: 0.0 },
+                      { tick: clip.lengthTicks, value: 0.2, tension: 0.0 },
+                    ],
+                    lengthTicks: clip.lengthTicks,
+                    colorHex: "#38bdf8",
+                  }
+                }
+                widthPx={widthPx}
+                heightPx={TRACK_HEIGHT - 22}
+                channels={channels}
+                onUpdatePoints={(pts) => {
+                  onUpdatePlaylist((prev) => ({
+                    ...prev,
+                    automationClips: (prev.automationClips ?? []).map((ac) =>
+                      ac.id === clip.referenceId ? { ...ac, points: pts } : ac,
+                    ),
+                  }));
+                }}
+                onUpdateTarget={(targetType, targetId, name) => {
+                  onUpdatePlaylist((prev) => ({
+                    ...prev,
+                    automationClips: (prev.automationClips ?? []).map((ac) =>
+                      ac.id === clip.referenceId
+                        ? { ...ac, targetType: targetType as any, targetId, name }
+                        : ac,
+                    ),
+                    clips: prev.clips.map((c) =>
+                      c.id === clip.id ? { ...c, name: `${name} Automation` } : c,
+                    ),
+                  }));
+                }}
+              />
             )}
           </div>
 
@@ -1056,3 +1084,305 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
     </div>
   );
 });
+
+export function evaluateAutomationValue(
+  points: readonly QlAutomationPoint[],
+  localTick: number,
+  totalLengthTicks: number,
+): number {
+  if (!points || points.length === 0) return 0.5;
+  if (points.length === 1) return points[0]!.value;
+
+  const sorted = [...points].sort((a, b) => a.tick - b.tick);
+  if (localTick <= sorted[0]!.tick) return sorted[0]!.value;
+  if (localTick >= sorted[sorted.length - 1]!.tick) return sorted[sorted.length - 1]!.value;
+
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const p0 = sorted[i]!;
+    const p1 = sorted[i + 1]!;
+    if (localTick >= p0.tick && localTick <= p1.tick) {
+      const span = Math.max(1, p1.tick - p0.tick);
+      const t = (localTick - p0.tick) / span;
+      const tension = p0.tension || 0.0;
+      const power = Math.exp(-tension * 2.2);
+      const curvedT = Math.pow(Math.max(0, Math.min(1, t)), power);
+      return p0.value + (p1.value - p0.value) * curvedT;
+    }
+  }
+  return sorted[sorted.length - 1]!.value;
+}
+
+const InteractiveAutomationCurve: React.FC<{
+  readonly clip: QlPlaylistClip;
+  readonly autoClip: QlAutomationClip;
+  readonly widthPx: number;
+  readonly heightPx: number;
+  readonly channels: readonly QlChannel[];
+  readonly onUpdatePoints: (points: QlAutomationPoint[]) => void;
+  readonly onUpdateTarget: (targetType: string, targetId: string, name: string) => void;
+}> = ({ clip, autoClip, widthPx, heightPx, channels, onUpdatePoints, onUpdateTarget }) => {
+  const [draggingPointIdx, setDraggingPointIdx] = useState<number | null>(null);
+  const [draggingTensionIdx, setDraggingTensionIdx] = useState<number | null>(null);
+  const [targetMenuOpen, setTargetMenuOpen] = useState(false);
+  const svgRef = useRef<SVGSVGElement | null>(null);
+
+  const points = useMemo(() => {
+    if (autoClip.points && autoClip.points.length >= 2) {
+      return [...autoClip.points].sort((a, b) => a.tick - b.tick);
+    }
+    return [
+      { tick: 0, value: 0.8, tension: 0.0 },
+      { tick: clip.lengthTicks, value: 0.2, tension: 0.0 },
+    ];
+  }, [autoClip.points, clip.lengthTicks]);
+
+  const { pathD, areaD, renderedPoints, tensionHandles } = useMemo(() => {
+    const H = Math.max(20, heightPx);
+    const W = Math.max(20, widthPx);
+
+    const coords = points.map((p) => ({
+      tick: p.tick,
+      value: p.value,
+      tension: p.tension,
+      x: Math.max(0, Math.min(W, (p.tick / Math.max(1, clip.lengthTicks)) * W)),
+      y: Math.max(2, Math.min(H - 2, (1.0 - p.value) * (H - 4) + 2)),
+    }));
+
+    let d = `M ${coords[0]!.x} ${coords[0]!.y}`;
+    const handles: { idx: number; cx: number; cy: number; tension: number }[] = [];
+
+    for (let i = 0; i < coords.length - 1; i++) {
+      const p0 = coords[i]!;
+      const p1 = coords[i + 1]!;
+      const mx = (p0.x + p1.x) / 2;
+      const my = (p0.y + p1.y) / 2;
+      const tension = p0.tension || 0;
+      const cy = Math.max(0, Math.min(H, my - tension * (H * 0.45)));
+      const cx = mx;
+      d += ` Q ${cx} ${cy} ${p1.x} ${p1.y}`;
+      handles.push({ idx: i, cx, cy, tension });
+    }
+
+    const firstX = coords[0]!.x;
+    const lastX = coords[coords.length - 1]!.x;
+    const area = `${d} L ${lastX} ${H} L ${firstX} ${H} Z`;
+
+    return { pathD: d, areaD: area, renderedPoints: coords, tensionHandles: handles };
+  }, [points, widthPx, heightPx, clip.lengthTicks]);
+
+  const handlePointPointerDown = (idx: number, e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDraggingPointIdx(idx);
+  };
+
+  const handleTensionPointerDown = (idx: number, e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    setDraggingTensionIdx(idx);
+  };
+
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const relY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+
+    if (draggingPointIdx !== null) {
+      const normVal = Math.max(0, Math.min(1, 1.0 - relY / rect.height));
+      const normTick = Math.round((relX / rect.width) * clip.lengthTicks);
+
+      const next = [...points];
+      const cur = next[draggingPointIdx]!;
+      const minTick = draggingPointIdx === 0 ? 0 : next[draggingPointIdx - 1]!.tick + 1;
+      const maxTick =
+        draggingPointIdx === next.length - 1
+          ? clip.lengthTicks
+          : next[draggingPointIdx + 1]!.tick - 1;
+
+      const clampedTick = Math.max(minTick, Math.min(maxTick, normTick));
+      next[draggingPointIdx] = {
+        ...cur,
+        tick: clampedTick,
+        value: Number(normVal.toFixed(3)),
+      };
+      onUpdatePoints(next);
+    } else if (draggingTensionIdx !== null) {
+      const p0 = renderedPoints[draggingTensionIdx]!;
+      const my = p0.y;
+      const dy = my - relY;
+      const tension = Math.max(-1.0, Math.min(1.0, dy / (rect.height * 0.45)));
+      const next = [...points];
+      next[draggingTensionIdx] = {
+        ...next[draggingTensionIdx]!,
+        tension: Number(tension.toFixed(2)),
+      };
+      onUpdatePoints(next);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent) => {
+    if (draggingPointIdx !== null || draggingTensionIdx !== null) {
+      e.stopPropagation();
+      setDraggingPointIdx(null);
+      setDraggingTensionIdx(null);
+    }
+  };
+
+  const handleSvgDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!svgRef.current) return;
+    const rect = svgRef.current.getBoundingClientRect();
+    const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+    const relY = Math.max(0, Math.min(rect.height, e.clientY - rect.top));
+    const clickTick = Math.round((relX / rect.width) * clip.lengthTicks);
+    const clickVal = Number(Math.max(0, Math.min(1, 1.0 - relY / rect.height)).toFixed(3));
+
+    const newPoints = [...points, { tick: clickTick, value: clickVal, tension: 0.0 }].sort(
+      (a, b) => a.tick - b.tick,
+    );
+    onUpdatePoints(newPoints);
+  };
+
+  const handleDeletePoint = (idx: number, e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (points.length <= 2) return;
+    const next = points.filter((_, i) => i !== idx);
+    onUpdatePoints(next);
+  };
+
+  return (
+    <div
+      className="w-full h-full relative group/auto select-none"
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onDoubleClick={handleSvgDoubleClick}
+    >
+      <div className="absolute top-0.5 left-1 z-20 flex items-center gap-1">
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setTargetMenuOpen((o) => !o);
+          }}
+          className="px-1 py-0.2 bg-black/75 hover:bg-black text-[8px] font-mono font-bold text-sky-400 rounded flex items-center gap-1 border border-sky-500/40 cursor-pointer shadow"
+          title="Click to change automation target parameter"
+        >
+          <Sliders size={8} />
+          <span>{autoClip.targetType.toUpperCase()}: {autoClip.targetId}</span>
+        </button>
+
+        {targetMenuOpen && (
+          <div
+            className="absolute top-4 left-0 bg-[#20242a] border border-black/90 rounded shadow-2xl p-1 z-30 min-w-[150px] text-[10px]"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="text-[8px] font-bold text-fl-dim px-1.5 py-0.5">TARGET PARAMETER</div>
+            <button
+              type="button"
+              onClick={() => {
+                onUpdateTarget("mixer_fader", "0", "Master Fader");
+                setTargetMenuOpen(false);
+              }}
+              className="w-full text-left px-1.5 py-1 hover:bg-sky-600 hover:text-white rounded cursor-pointer"
+            >
+              Master Fader
+            </button>
+            {[1, 2, 3, 4].map((i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  onUpdateTarget("mixer_fader", String(i), `Insert ${i} Fader`);
+                  setTargetMenuOpen(false);
+                }}
+                className="w-full text-left px-1.5 py-1 hover:bg-sky-600 hover:text-white rounded cursor-pointer"
+              >
+                Insert {i} Fader
+              </button>
+            ))}
+            {channels.slice(0, 4).map((ch) => (
+              <React.Fragment key={ch.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateTarget("channel_volume", ch.id, `${ch.name} Vol`);
+                    setTargetMenuOpen(false);
+                  }}
+                  className="w-full text-left px-1.5 py-1 hover:bg-sky-600 hover:text-white rounded cursor-pointer truncate"
+                >
+                  {ch.name} Volume
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onUpdateTarget("channel_cutoff", ch.id, `${ch.name} Cutoff`);
+                    setTargetMenuOpen(false);
+                  }}
+                  className="w-full text-left px-1.5 py-1 hover:bg-sky-600 hover:text-white rounded cursor-pointer truncate"
+                >
+                  {ch.name} Filter Cutoff
+                </button>
+              </React.Fragment>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <svg ref={svgRef} className="w-full h-full overflow-visible pointer-events-auto">
+        <defs>
+          <linearGradient id={`auto_grad_${clip.id}`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor="#38bdf8" stopOpacity="0.4" />
+            <stop offset="100%" stopColor="#0284c7" stopOpacity="0.05" />
+          </linearGradient>
+        </defs>
+
+        <path d={areaD} fill={`url(#auto_grad_${clip.id})`} />
+        <path
+          d={pathD}
+          fill="none"
+          stroke="#38bdf8"
+          strokeWidth="2"
+          strokeLinecap="round"
+          className="filter drop-shadow"
+        />
+
+        {tensionHandles.map((h) => (
+          <circle
+            key={`tension_${h.idx}`}
+            cx={h.cx}
+            cy={h.cy}
+            r={3.5}
+            fill="#00e676"
+            stroke="#000000"
+            strokeWidth="1"
+            onPointerDown={(e) => handleTensionPointerDown(h.idx, e)}
+            className="cursor-ns-resize hover:scale-150 transition-transform shadow-md"
+          >
+            <title>{`Curve Tension: ${h.tension.toFixed(2)} (Drag vertically to bend)`}</title>
+          </circle>
+        ))}
+
+        {renderedPoints.map((p, idx) => (
+          <circle
+            key={`pt_${idx}`}
+            cx={p.x}
+            cy={p.y}
+            r={4.5}
+            fill="#ffffff"
+            stroke="#0284c7"
+            strokeWidth="2"
+            onPointerDown={(e) => handlePointPointerDown(idx, e)}
+            onContextMenu={(e) => handleDeletePoint(idx, e)}
+            className="cursor-move hover:scale-130 transition-transform shadow-lg"
+          >
+            <title>{`Point ${idx + 1}: Value ${(p.value * 100).toFixed(0)}% @ Tick ${p.tick} (Right-click to remove)`}</title>
+          </circle>
+        ))}
+      </svg>
+    </div>
+  );
+};

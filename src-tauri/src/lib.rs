@@ -422,6 +422,7 @@ mod tests {
             enabled: true,
             plugin_tag: 1, // Tape saturation
             params: [12.0, 0.5, 0.0, 1.0],
+            ..Default::default()
         };
 
         let mut left = 0.5f32;
@@ -435,6 +436,7 @@ mod tests {
             enabled: true,
             plugin_tag: 2, // Limiter
             params: [-6.0, -0.1, 80.0, 2.0],
+            ..Default::default()
         };
         let mut high_l = 2.0f32;
         let mut high_r = 2.0f32;

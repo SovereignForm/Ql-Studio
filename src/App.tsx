@@ -35,6 +35,7 @@ import {
 } from "./components/MixerPanel.tsx";
 import {
   PlaylistArranger,
+  evaluateAutomationValue,
 } from "./components/PlaylistArranger.tsx";
 import {
   PluginManagerModal,
@@ -330,9 +331,13 @@ function defaultWindowsLayout(): Record<string, WindowState> {
 }
 
 interface HistorySnapshot {
-  readonly channels: QlChannel[];
-  readonly patterns: QlPattern[];
+  readonly actionName: string;
+  readonly timestamp: number;
+  readonly channels: readonly QlChannel[];
+  readonly patterns: readonly QlPattern[];
   readonly activePatternId: string;
+  readonly playlist: QlPlaylistState;
+  readonly mixer: QlMixerState;
 }
 
 /* Interactive Piano Roll Component (F7) */
@@ -473,6 +478,7 @@ export const App: React.FC = () => {
   const activePatternRef = useRef<QlPattern | null>(null);
   const channelsRef = useRef<QlChannel[]>([]);
   const mixerRef = useRef<QlMixerState | null>(null);
+  const playlistRef = useRef<QlPlaylistState | null>(null);
 
   const [projectTitle, setProjectTitle] = useState("Ql Studio — Audio Production Session");
   const [bpm, setBpm] = useState(140.0);
@@ -819,39 +825,76 @@ export const App: React.FC = () => {
     [patterns, activePatternId],
   );
 
-  const pushHistory = useCallback(() => {
-    setUndoStack((prev) => [
-      ...prev.slice(-24),
-      { channels, patterns, activePatternId },
-    ]);
-    setRedoStack([]);
-  }, [channels, patterns, activePatternId]);
+  const pushHistory = useCallback(
+    (actionName: string = "Edit") => {
+      setUndoStack((prev) => [
+        ...prev.slice(-35),
+        {
+          actionName,
+          timestamp: Date.now(),
+          channels: [...channels],
+          patterns: [...patterns],
+          activePatternId,
+          playlist: { ...playlist, clips: [...playlist.clips], tracks: [...playlist.tracks] },
+          mixer: { ...mixer, inserts: [...mixer.inserts] },
+        },
+      ]);
+      setRedoStack([]);
+    },
+    [channels, patterns, activePatternId, playlist, mixer],
+  );
 
   const handleUndo = useCallback(() => {
     setUndoStack((prev) => {
       if (prev.length === 0) return prev;
       const last = prev[prev.length - 1]!;
-      setRedoStack((r) => [...r, { channels, patterns, activePatternId }]);
-      setChannels(last.channels);
-      setPatterns(last.patterns);
+      setRedoStack((r) => [
+        ...r,
+        {
+          actionName: last.actionName,
+          timestamp: Date.now(),
+          channels: [...channels],
+          patterns: [...patterns],
+          activePatternId,
+          playlist: { ...playlist, clips: [...playlist.clips], tracks: [...playlist.tracks] },
+          mixer: { ...mixer, inserts: [...mixer.inserts] },
+        },
+      ]);
+      setChannels([...last.channels]);
+      setPatterns([...last.patterns]);
       setActivePatternId(last.activePatternId);
-      setStatusMessage("Undo applied (Ctrl+Z)");
+      setPlaylist(last.playlist);
+      setMixer(last.mixer);
+      setStatusMessage(`Undo: ${last.actionName} (Ctrl+Z)`);
       return prev.slice(0, -1);
     });
-  }, [channels, patterns, activePatternId]);
+  }, [channels, patterns, activePatternId, playlist, mixer]);
 
   const handleRedo = useCallback(() => {
     setRedoStack((prev) => {
       if (prev.length === 0) return prev;
       const next = prev[prev.length - 1]!;
-      setUndoStack((u) => [...u, { channels, patterns, activePatternId }]);
-      setChannels(next.channels);
-      setPatterns(next.patterns);
+      setUndoStack((u) => [
+        ...u,
+        {
+          actionName: next.actionName,
+          timestamp: Date.now(),
+          channels: [...channels],
+          patterns: [...patterns],
+          activePatternId,
+          playlist: { ...playlist, clips: [...playlist.clips], tracks: [...playlist.tracks] },
+          mixer: { ...mixer, inserts: [...mixer.inserts] },
+        },
+      ]);
+      setChannels([...next.channels]);
+      setPatterns([...next.patterns]);
       setActivePatternId(next.activePatternId);
-      setStatusMessage("Redo applied (Ctrl+Y)");
+      setPlaylist(next.playlist);
+      setMixer(next.mixer);
+      setStatusMessage(`Redo: ${next.actionName} (Ctrl+Y)`);
       return prev.slice(0, -1);
     });
-  }, [channels, patterns, activePatternId]);
+  }, [channels, patterns, activePatternId, playlist, mixer]);
 
   const mutateActivePattern = useCallback(
     (updater: (pat: QlPattern) => QlPattern) => {
@@ -1091,7 +1134,11 @@ export const App: React.FC = () => {
         void handleToggleFullscreen();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
         e.preventDefault();
-        handleUndo();
+        if (e.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
         e.preventDefault();
         handleRedo();
@@ -1105,6 +1152,7 @@ export const App: React.FC = () => {
   activePatternRef.current = activePattern;
   channelsRef.current = channels;
   mixerRef.current = mixer;
+  playlistRef.current = playlist;
 
   // Playhead, Song Tick, and Real-Time Peak Meter / Polyphony animation loop
   useEffect(() => {
@@ -1162,6 +1210,16 @@ export const App: React.FC = () => {
         if (stepIdx !== prevStep) {
           prevStep = stepIdx;
           setActiveStep(stepIdx);
+
+          // Evaluate Active Automation Clips along Timeline
+          const curPlay = playlistRef.current || playlist;
+          const activeAutoClips = curPlay.clips.filter(
+            (c) =>
+              c.kind === "automation" &&
+              currentTick >= c.startTick &&
+              currentTick < c.startTick + c.lengthTicks,
+          );
+
           for (const ch of curChans) {
             const anySolo = curChans.some((c) => c.solo);
             const audible = anySolo ? ch.solo : !ch.muted;
@@ -1170,14 +1228,49 @@ export const App: React.FC = () => {
             if (st?.active) {
               activeVoices += 1;
               const vel = st.velocity / 127;
-              const chGain = Math.pow(10, ch.volumeDb / 20) * vel;
+              let effectiveVolDb = ch.volumeDb;
+              for (const clip of activeAutoClips) {
+                const autoDef = curPlay.automationClips?.find((a) => a.id === clip.referenceId);
+                if (
+                  autoDef &&
+                  autoDef.targetId === ch.id &&
+                  autoDef.targetType === "channel_volume"
+                ) {
+                  const localTick = currentTick - clip.startTick;
+                  const normVal = evaluateAutomationValue(
+                    autoDef.points,
+                    localTick,
+                    clip.lengthTicks,
+                  );
+                  effectiveVolDb += (normVal - 0.5) * 24; // Modulate ±12dB
+                }
+              }
+
+              const chGain = Math.pow(10, effectiveVolDb / 20) * vel;
               const panAngle = ((ch.pan + 1) * Math.PI) / 4;
               const l = Math.min(1, chGain * Math.cos(panAngle) * 1.3);
               const r = Math.min(1, chGain * Math.sin(panAngle) * 1.3);
               const targetIns = Math.min(64, Math.max(0, ch.assignedMixerInsert));
               const insStrip = curMix.inserts[targetIns];
               if (insStrip && !insStrip.muted) {
-                const faderGain = Math.pow(10, insStrip.faderVolumeDb / 20);
+                let effectiveFaderDb = insStrip.faderVolumeDb;
+                for (const clip of activeAutoClips) {
+                  const autoDef = curPlay.automationClips?.find((a) => a.id === clip.referenceId);
+                  if (
+                    autoDef &&
+                    autoDef.targetId === String(targetIns) &&
+                    autoDef.targetType === "mixer_fader"
+                  ) {
+                    const localTick = currentTick - clip.startTick;
+                    const normVal = evaluateAutomationValue(
+                      autoDef.points,
+                      localTick,
+                      clip.lengthTicks,
+                    );
+                    effectiveFaderDb += (normVal - 0.5) * 20; // Modulate ±10dB
+                  }
+                }
+                const faderGain = Math.pow(10, effectiveFaderDb / 20);
                 decayLevels[targetIns]![0] = Math.max(
                   decayLevels[targetIns]![0],
                   l * faderGain,

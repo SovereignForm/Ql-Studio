@@ -3,16 +3,27 @@
  * buttons with context menu, mixer-target LCD, skeuomorphic 4-step-grouped grid, and a
  * Graph Editor drawer (velocity / pan / pitch) aligned under the steps of the selected channel.
  */
-import { ChevronDown, FolderOpen, Plus } from "lucide-react";
+import { Activity, ChevronDown, FolderOpen, Plus, Sliders, Volume2, Waves, X, Zap } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
-import type { QlChannel, QlPattern, QlStep } from "../schemas.ts";
+import type { QlChannel, QlPattern, QlStep, WaveformShape } from "../schemas.ts";
 import { Knob, Led, formatDb, formatPan } from "../ui/primitives.tsx";
 import { BROWSER_DRAG_MIME, type BrowserItem } from "./BrowserSidebar.tsx";
 
 export type ChannelPatch = Partial<
   Pick<
     QlChannel,
-    "muted" | "solo" | "pan" | "volumeDb" | "assignedMixerInsert" | "name" | "colorHex" | "sampleSlot" | "samplePath"
+    | "muted"
+    | "solo"
+    | "pan"
+    | "volumeDb"
+    | "assignedMixerInsert"
+    | "name"
+    | "colorHex"
+    | "sampleSlot"
+    | "samplePath"
+    | "waveform"
+    | "rootMidiNote"
+    | "pitchSemitones"
   >
 >;
 export type ChannelAction =
@@ -21,6 +32,7 @@ export type ChannelAction =
   | "clone"
   | "delete"
   | "load_wav"
+  | "synth_settings"
   | "fill_2"
   | "fill_4"
   | "clear_steps";
@@ -128,6 +140,7 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
   const [graphParam, setGraphParam] = useState<GraphParam>("velocity");
   const [menu, setMenu] = useState<{ channelId: string; x: number; y: number } | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [synthModalChannelId, setSynthModalChannelId] = useState<string | null>(null);
   const paintRef = useRef<{ channelId: string; value: boolean } | null>(null);
 
   useEffect(() => {
@@ -239,12 +252,13 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
                     onSelectChannel(ch.id);
                     onAuditionChannel?.(ch.id);
                   }}
+                  onDoubleClick={() => setSynthModalChannelId(ch.id)}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     onSelectChannel(ch.id);
                     setMenu({ channelId: ch.id, x: e.clientX, y: e.clientY });
                   }}
-                  title="Left-click: select & audition · Right-click: channel menu · Drop browser item to replace generator"
+                  title="Click: audition · Double-click: Open Synth & ADSR Editor · Right-click: channel menu"
                   className="w-[132px] h-[22px] shrink-0 flex items-center rounded-[3px] overflow-hidden border border-black/70 fl-bevel cursor-pointer"
                   style={{
                     background: `linear-gradient(180deg, ${ch.colorHex}55, ${ch.colorHex}22)`,
@@ -259,6 +273,14 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
                       WAV
                     </span>
                   )}
+                </button>
+                <button
+                  type="button"
+                  title="Channel Synth & ADSR Envelope Inspector"
+                  onClick={() => setSynthModalChannelId(ch.id)}
+                  className="w-[18px] h-[22px] grid place-items-center rounded-[2px] bg-fl-deep hover:bg-fl-orange hover:text-black text-fl-dim border border-black/60 cursor-pointer shrink-0"
+                >
+                  <Activity size={10} />
                 </button>
                 <button
                   type="button"
@@ -372,6 +394,7 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
         >
           {(
             [
+              ["synth_settings", "Channel Synth & ADSR..."],
               ["load_wav", "Load sample (.wav)..."],
               ["fill_2", "Fill each 2 steps"],
               ["fill_4", "Fill each 4 steps"],
@@ -386,7 +409,11 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
               key={actionKey}
               type="button"
               onClick={() => {
-                onChannelAction(menu.channelId, actionKey);
+                if (actionKey === "synth_settings") {
+                  setSynthModalChannelId(menu.channelId);
+                } else {
+                  onChannelAction(menu.channelId, actionKey);
+                }
                 setMenu(null);
               }}
               className="w-full text-left px-3 py-1 text-[11px] hover:bg-fl-orange hover:text-black cursor-pointer"
@@ -395,6 +422,15 @@ export const ChannelRack: React.FC<ChannelRackProps> = React.memo(({
             </button>
           ))}
         </div>
+      )}
+
+      {synthModalChannelId && (
+        <ChannelSynthModal
+          channel={channels.find((c) => c.id === synthModalChannelId) ?? channels[0]!}
+          onClose={() => setSynthModalChannelId(null)}
+          onUpdateChannel={onUpdateChannel}
+          onAuditionChannel={onAuditionChannel}
+        />
       )}
     </div>
   );
@@ -504,6 +540,390 @@ const GraphEditor: React.FC<{
           </div>
         );
       })}
+    </div>
+  );
+};
+
+const ChannelSynthModal: React.FC<{
+  readonly channel: QlChannel;
+  readonly onClose: () => void;
+  readonly onUpdateChannel: (id: string, patch: ChannelPatch) => void;
+  readonly onAuditionChannel?: (id: string, note?: number) => void;
+}> = ({ channel, onClose, onUpdateChannel, onAuditionChannel }) => {
+  const [attackMs, setAttackMs] = useState(15);
+  const [decayMs, setDecayMs] = useState(180);
+  const [sustain, setSustain] = useState(0.65);
+  const [releaseMs, setReleaseMs] = useState(320);
+
+  const [cutoffHz, setCutoffHz] = useState(2500);
+  const [resonanceQ, setResonanceQ] = useState(2.8);
+  const [filterType, setFilterType] = useState<"lowpass" | "bandpass" | "highpass">("lowpass");
+  const [fmDepth, setFmDepth] = useState(0.2);
+
+  const waveforms: readonly { shape: WaveformShape; label: string }[] = [
+    { shape: "sawtooth", label: "Sawtooth" },
+    { shape: "pulse", label: "Square / Pulse" },
+    { shape: "sine", label: "Sine" },
+    { shape: "triangle", label: "Triangle" },
+    { shape: "noise", label: "White Noise" },
+    { shape: "sampler_pcm", label: "PCM / 808 WAV" },
+  ];
+
+  const presets = [
+    {
+      name: "808 Deep Sub Bass",
+      waveform: "sawtooth" as WaveformShape,
+      attack: 5,
+      decay: 450,
+      sustain: 0.1,
+      release: 250,
+      cutoff: 220,
+      res: 4.2,
+      fm: 0.05,
+      vol: 2.0,
+      pitch: -12,
+    },
+    {
+      name: "Acid 303 Resonance Lead",
+      waveform: "sawtooth" as WaveformShape,
+      attack: 10,
+      decay: 260,
+      sustain: 0.4,
+      release: 180,
+      cutoff: 1400,
+      res: 8.5,
+      fm: 0.35,
+      vol: 0.0,
+      pitch: 0,
+    },
+    {
+      name: "Lush Poly FM Pad",
+      waveform: "sine" as WaveformShape,
+      attack: 180,
+      decay: 600,
+      sustain: 0.85,
+      release: 800,
+      cutoff: 4200,
+      res: 1.8,
+      fm: 0.80,
+      vol: -1.5,
+      pitch: 0,
+    },
+    {
+      name: "Punchy Club Kick",
+      waveform: "sine" as WaveformShape,
+      attack: 2,
+      decay: 140,
+      sustain: 0.0,
+      release: 80,
+      cutoff: 650,
+      res: 1.2,
+      fm: 0.0,
+      vol: 3.0,
+      pitch: -12,
+    },
+    {
+      name: "Analog Chiptune Pluck",
+      waveform: "pulse" as WaveformShape,
+      attack: 2,
+      decay: 95,
+      sustain: 0.05,
+      release: 120,
+      cutoff: 7500,
+      res: 3.2,
+      fm: 0.1,
+      vol: -2.0,
+      pitch: 12,
+    },
+  ];
+
+  const applyPreset = (p: typeof presets[number]) => {
+    setAttackMs(p.attack);
+    setDecayMs(p.decay);
+    setSustain(p.sustain);
+    setReleaseMs(p.release);
+    setCutoffHz(p.cutoff);
+    setResonanceQ(p.res);
+    setFmDepth(p.fm);
+    onUpdateChannel(channel.id, {
+      waveform: p.waveform,
+      volumeDb: p.vol,
+      pitchSemitones: p.pitch,
+    });
+    onAuditionChannel?.(channel.id, 60 + p.pitch);
+  };
+
+  const svgW = 280;
+  const svgH = 90;
+  const totalMs = attackMs + decayMs + 400 + releaseMs;
+  const aX = (attackMs / totalMs) * svgW;
+  const dX = aX + (decayMs / totalMs) * svgW;
+  const sX = dX + (400 / totalMs) * svgW;
+  const rX = svgW;
+  const sY = (1.0 - sustain) * (svgH - 14) + 6;
+
+  const adsrPath = `M 0 ${svgH} L ${aX} 6 L ${dX} ${sY} L ${sX} ${sY} L ${rX} ${svgH}`;
+  const adsrArea = `${adsrPath} Z`;
+
+  return (
+    <div
+      className="fixed inset-0 z-[9999] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+      onPointerDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="bg-[#1e222a] border border-fl-orange/70 rounded-lg w-full max-w-xl shadow-2xl overflow-hidden flex flex-col fl-bevel">
+        <div className="h-9 px-3 bg-gradient-to-r from-[#292f3a] to-[#20252e] border-b border-black/80 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Waves size={15} className="text-fl-orange animate-pulse" />
+            <span className="font-bold text-[12px] text-white">
+              CHANNEL SYNTHESIS & ADSR ENVELOPE —{" "}
+              <span className="text-fl-orange font-mono">{channel.name}</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-fl-dim hover:text-white p-1 rounded hover:bg-white/10 cursor-pointer"
+          >
+            <X size={15} />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-4 max-h-[85vh] overflow-y-auto fl-scroll text-[11px]">
+          <div className="flex flex-col gap-1.5 bg-[#171a21] p-2.5 rounded border border-black/60 fl-inset">
+            <span className="text-[10px] font-bold text-fl-dim flex items-center gap-1">
+              <Zap size={11} className="text-fl-amber" />
+              QUICK SYNTH & BASS PRESETS
+            </span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+              {presets.map((pre) => (
+                <button
+                  key={pre.name}
+                  type="button"
+                  onClick={() => applyPreset(pre)}
+                  className="px-2 py-1.5 rounded bg-fl-raised hover:bg-fl-orange hover:text-black border border-black/70 fl-bevel text-[10px] font-semibold text-fl-text flex items-center justify-between cursor-pointer transition-colors"
+                >
+                  <span className="truncate">{pre.name}</span>
+                  <span className="text-[8px] font-mono opacity-70">
+                    {pre.waveform.slice(0, 3).toUpperCase()}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-3 rounded bg-fl-deep border border-black/60 fl-inset flex flex-col gap-2.5">
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-fl-orange flex items-center gap-1.5 text-[11px]">
+                  <Activity size={13} />
+                  ADSR VOLUME ENVELOPE
+                </span>
+                <span className="font-mono text-[9px] text-fl-dim">
+                  A:{attackMs}ms · D:{decayMs}ms · S:{(sustain * 100).toFixed(0)}% · R:{releaseMs}ms
+                </span>
+              </div>
+
+              <div className="w-full h-[90px] bg-[#121418] rounded border border-black/80 overflow-hidden relative shadow-inner">
+                <svg className="w-full h-full" preserveAspectRatio="none">
+                  <defs>
+                    <linearGradient id="adsr_gradient" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#ff8500" stopOpacity="0.45" />
+                      <stop offset="100%" stopColor="#ff3c00" stopOpacity="0.05" />
+                    </linearGradient>
+                  </defs>
+                  <path d={adsrArea} fill="url(#adsr_gradient)" />
+                  <path
+                    d={adsrPath}
+                    fill="none"
+                    stroke="#ff8500"
+                    strokeWidth="2.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                  <circle cx={aX} cy={6} r={3.5} fill="#ffffff" stroke="#ff8500" strokeWidth="1.5" />
+                  <circle cx={dX} cy={sY} r={3.5} fill="#ffffff" stroke="#ff8500" strokeWidth="1.5" />
+                  <circle cx={sX} cy={sY} r={3.5} fill="#ffffff" stroke="#ff8500" strokeWidth="1.5" />
+                </svg>
+              </div>
+
+              <div className="grid grid-cols-4 gap-2 text-center text-[10px]">
+                <div className="flex flex-col gap-1">
+                  <span className="text-fl-dim font-bold">ATTACK</span>
+                  <input
+                    type="range"
+                    min="1"
+                    max="1000"
+                    value={attackMs}
+                    onChange={(e) => setAttackMs(Number(e.target.value))}
+                    className="accent-fl-orange cursor-pointer"
+                  />
+                  <span className="font-mono text-[9px] text-fl-amber">{attackMs}ms</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-fl-dim font-bold">DECAY</span>
+                  <input
+                    type="range"
+                    min="10"
+                    max="1500"
+                    value={decayMs}
+                    onChange={(e) => setDecayMs(Number(e.target.value))}
+                    className="accent-fl-orange cursor-pointer"
+                  />
+                  <span className="font-mono text-[9px] text-fl-amber">{decayMs}ms</span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-fl-dim font-bold">SUSTAIN</span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={sustain}
+                    onChange={(e) => setSustain(Number(e.target.value))}
+                    className="accent-fl-orange cursor-pointer"
+                  />
+                  <span className="font-mono text-[9px] text-fl-amber">
+                    {(sustain * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-fl-dim font-bold">RELEASE</span>
+                  <input
+                    type="range"
+                    min="10"
+                    max="2500"
+                    value={releaseMs}
+                    onChange={(e) => setReleaseMs(Number(e.target.value))}
+                    className="accent-fl-orange cursor-pointer"
+                  />
+                  <span className="font-mono text-[9px] text-fl-amber">{releaseMs}ms</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-3 rounded bg-fl-deep border border-black/60 fl-inset flex flex-col gap-3">
+              <span className="font-bold text-fl-orange flex items-center gap-1.5 text-[11px]">
+                <Sliders size={13} />
+                RESONANT MOOG FILTER & FM MODULATION
+              </span>
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center text-[10px]">
+                  <span className="text-fl-text font-semibold">Cutoff Frequency:</span>
+                  <span className="font-mono text-fl-amber font-bold">{cutoffHz} Hz</span>
+                </div>
+                <input
+                  type="range"
+                  min="40"
+                  max="18000"
+                  step="20"
+                  value={cutoffHz}
+                  onChange={(e) => setCutoffHz(Number(e.target.value))}
+                  className="w-full accent-fl-orange cursor-pointer"
+                />
+
+                <div className="flex justify-between items-center text-[10px]">
+                  <span className="text-fl-text font-semibold">Resonance (Q):</span>
+                  <span className="font-mono text-fl-amber font-bold">{resonanceQ.toFixed(1)}</span>
+                </div>
+                <input
+                  type="range"
+                  min="0.5"
+                  max="12.0"
+                  step="0.1"
+                  value={resonanceQ}
+                  onChange={(e) => setResonanceQ(Number(e.target.value))}
+                  className="w-full accent-fl-orange cursor-pointer"
+                />
+
+                <div className="flex justify-between items-center text-[10px]">
+                  <span className="text-fl-text font-semibold">FM Phase Modulation Index:</span>
+                  <span className="font-mono text-[#00e676] font-bold">
+                    {(fmDepth * 100).toFixed(0)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="2.5"
+                  step="0.05"
+                  value={fmDepth}
+                  onChange={(e) => setFmDepth(Number(e.target.value))}
+                  className="w-full accent-[#00e676] cursor-pointer"
+                />
+              </div>
+
+              <div className="flex gap-1.5 pt-1">
+                {(["lowpass", "bandpass", "highpass"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setFilterType(t)}
+                    className={`flex-1 py-1 rounded text-[9px] font-bold uppercase fl-bevel border border-black/70 cursor-pointer ${
+                      filterType === t
+                        ? "bg-fl-orange text-black"
+                        : "bg-fl-raised text-fl-dim hover:text-white"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          <div className="p-3 rounded bg-fl-deep border border-black/60 fl-inset flex flex-col gap-2">
+            <span className="font-bold text-fl-text text-[11px] flex items-center justify-between">
+              <span>PRIMARY OSCILLATOR WAVEFORM</span>
+              <span className="text-fl-dim text-[10px] font-mono">
+                Current: {(channel.waveform ?? "sawtooth").toUpperCase()}
+              </span>
+            </span>
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5">
+              {waveforms.map((w) => {
+                const active = (channel.waveform ?? "sawtooth") === w.shape;
+                return (
+                  <button
+                    key={w.shape}
+                    type="button"
+                    onClick={() => {
+                      onUpdateChannel(channel.id, { waveform: w.shape });
+                      onAuditionChannel?.(channel.id);
+                    }}
+                    className={`py-2 px-1 rounded text-[10px] font-semibold flex flex-col items-center gap-1 border border-black/80 fl-bevel cursor-pointer transition-all ${
+                      active
+                        ? "bg-fl-orange text-black font-bold shadow-[0_0_8px_rgba(255,107,53,0.5)]"
+                        : "bg-fl-raised text-fl-text hover:bg-white/10"
+                    }`}
+                  >
+                    <span>{w.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="h-11 px-4 bg-[#181a20] border-t border-black/80 flex items-center justify-between">
+          <button
+            type="button"
+            onClick={() => onAuditionChannel?.(channel.id, 60)}
+            className="px-3 py-1.5 rounded bg-fl-raised hover:bg-white/10 text-fl-text text-[11px] font-bold border border-black/70 fl-bevel flex items-center gap-1.5 cursor-pointer"
+          >
+            <Volume2 size={13} className="text-fl-orange" />
+            Audition Sound (C5)
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-4 py-1.5 rounded bg-fl-orange hover:bg-orange-500 text-black font-bold text-[11px] fl-bevel cursor-pointer"
+          >
+            Done
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

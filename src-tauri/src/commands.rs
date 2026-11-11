@@ -876,6 +876,10 @@ pub fn load_plugin(
                 "builtin:ql_vintage_tape" => 1,
                 "builtin:ql_master_limiter" => 2,
                 "builtin:ql_stereo_imager" => 3,
+                "builtin:ql_studio_reverb" => 5,
+                "builtin:ql_pingpong_delay" => 6,
+                "builtin:ql_tube_distortion" => 7,
+                "builtin:ql_poly_matrix_synth" | "builtin:ql_acid_303" => 8,
                 _ => 4,
             };
             let mut params = [0.0f32; 4];
