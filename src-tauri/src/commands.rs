@@ -347,6 +347,18 @@ pub fn set_bpm(
     }
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.scheduler.set_bpm(bpm);
+
+    // If currently playing, recalculate next_unscheduled_tick against current_sample_frame
+    // so lookahead scheduling continues seamlessly at the new tempo without dead silence or event bursts
+    if guard.scheduler.is_playing {
+        let cur_frame = state.current_frame_estimate.load(Ordering::Relaxed);
+        let samples_per_tick = guard.scheduler.metrics.samples_per_tick;
+        if samples_per_tick > 0.0 {
+            guard.scheduler.next_unscheduled_tick =
+                (cur_frame as f64 / samples_per_tick).round() as u64;
+        }
+    }
+
     Ok(snapshot_from_guard(&guard, &state))
 }
 

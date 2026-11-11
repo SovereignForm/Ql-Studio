@@ -1329,9 +1329,14 @@ export const App: React.FC = () => {
   const handleBpmChange = useCallback(
     async (nextBpm: number) => {
       setBpm(nextBpm);
+      if (playbackStartMsRef.current > 0) {
+        const newTicksPerSec = (nextBpm / 60.0) * ppq;
+        const offsetMs = (songTick / newTicksPerSec) * 1000;
+        playbackStartMsRef.current = performance.now() - offsetMs;
+      }
       await engineClient.setBpm(nextBpm).catch(() => {});
     },
-    [engineClient],
+    [engineClient, songTick, ppq],
   );
 
   const handleMasterVolumeChange = useCallback((db: number) => {
