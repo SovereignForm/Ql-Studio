@@ -31,7 +31,7 @@ use std::thread;
 use std::time::Duration;
 use tauri::State;
 
-pub const DEFAULT_HARDWARE_BUFFER_FRAMES: u32 = 512;
+pub const DEFAULT_HARDWARE_BUFFER_FRAMES: u32 = 1024;
 
 pub struct SharedLookaheadState {
     pub scheduler: NativeLookaheadScheduler,

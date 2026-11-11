@@ -2789,37 +2789,104 @@ export const App: React.FC = () => {
             onPointerDown={() => setAboutModalOpen(false)}
           >
             <div
-              className="w-[420px] rounded bg-[#232830] border border-black/90 shadow-2xl overflow-hidden"
+              className="w-[490px] rounded-lg bg-[#20242b] border border-[#ff8500]/40 shadow-[0_12px_40px_rgba(0,0,0,0.85)] overflow-hidden"
               onPointerDown={(e) => e.stopPropagation()}
             >
-              <div className="h-8 px-3 flex items-center justify-between bg-[#2c323b] border-b border-black/70">
-                <div className="flex items-center gap-2 text-[12px] font-bold text-fl-orange">
-                  <Info size={14} /> ABOUT QL STUDIO 24
+              <div className="h-9 px-3.5 flex items-center justify-between bg-[#191d22] border-b border-black/80">
+                <div className="flex items-center gap-2 text-[12px] font-black tracking-wider text-fl-orange">
+                  <Info size={14} className="text-fl-orange drop-shadow-[0_0_6px_#ff8500]" /> ABOUT QUICKLAYER (QL) STUDIO
                 </div>
                 <button
                   type="button"
                   onClick={() => setAboutModalOpen(false)}
-                  className="w-5 h-5 grid place-items-center rounded hover:bg-red-500/70 cursor-pointer"
+                  className="w-5 h-5 grid place-items-center rounded hover:bg-red-500/80 text-white/70 hover:text-white transition-colors cursor-pointer"
                 >
                   <X size={13} />
                 </button>
               </div>
-              <div className="p-4 space-y-2.5 text-[11px] text-fl-text">
-                <p className="font-semibold text-white">
-                  QuickLayer (QL) Studio — Professional Digital Audio Workstation
-                </p>
-                <p className="text-fl-orange font-medium text-[10px]">
-                  Layer, Compose and Master with Zero Latency
-                </p>
-                <p className="text-fl-dim leading-relaxed">
-                  Built on Tauri v2 + Rust (<code className="text-fl-amber">cpal</code>,{" "}
-                  <code className="text-fl-amber">rtrb</code>,{" "}
-                  <code className="text-fl-amber">hound</code>) with zero-allocation audio rendering,
-                  4-point Hermite cubic WAV resampling, RBJ Audio EQ Cookbook biquad filters, Kahn
-                  topological DAG mixer verification, and native project import.
-                </p>
-                <div className="flex items-center gap-2 text-[10px] text-fl-led font-mono pt-1">
-                  <Cpu size={12} /> High-Performance Zero-Allocation Engine
+
+              <div className="p-5 space-y-4 text-[11px] text-fl-text">
+                {/* Brand Hero Header */}
+                <div className="flex items-center gap-3.5 p-3 rounded bg-black/30 border border-white/5">
+                  <img
+                    src="./logo.svg"
+                    alt="QuickLayer Studio Logo"
+                    className="w-12 h-12 shrink-0 drop-shadow-[0_0_12px_rgba(255,133,0,0.4)]"
+                  />
+                  <div className="flex flex-col">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-black tracking-wider text-white">
+                        QUICKLAYER <span className="text-fl-orange">STUDIO</span>
+                      </span>
+                      <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-fl-orange/20 border border-fl-orange/50 text-fl-orange">
+                        v1.0.0 Stable
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-semibold text-fl-orange tracking-wide">
+                      Layer, Compose and Master with Zero Latency
+                    </span>
+                    <span className="text-[10px] text-fl-dim">
+                      Professional Pattern-Based Digital Audio Workstation & DSP Suite
+                    </span>
+                  </div>
+                </div>
+
+                {/* Architecture Specifications */}
+                <div className="space-y-1.5">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-fl-dim">
+                    Audio Engine & DSP Specifications
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[10px]">
+                    <div className="p-2 rounded bg-white/[0.03] border border-white/5 flex flex-col gap-0.5">
+                      <span className="text-white font-semibold flex items-center gap-1.5">
+                        <Cpu size={11} className="text-fl-orange" /> Real-Time Audio Core
+                      </span>
+                      <span className="text-fl-dim">
+                        Rust zero-allocation thread (<code className="text-fl-amber">cpal</code> + wait-free <code className="text-fl-amber">rtrb</code>)
+                      </span>
+                    </div>
+
+                    <div className="p-2 rounded bg-white/[0.03] border border-white/5 flex flex-col gap-0.5">
+                      <span className="text-white font-semibold flex items-center gap-1.5">
+                        <Zap size={11} className="text-fl-green" /> Analog Soft Limiter
+                      </span>
+                      <span className="text-fl-dim">
+                        Continuous C1 Hermite saturation for crackle-free master output
+                      </span>
+                    </div>
+
+                    <div className="p-2 rounded bg-white/[0.03] border border-white/5 flex flex-col gap-0.5">
+                      <span className="text-white font-semibold flex items-center gap-1.5">
+                        <SlidersHorizontal size={11} className="text-fl-blue" /> 64-Insert Mixer
+                      </span>
+                      <span className="text-fl-dim">
+                        Kahn topological acyclic DAG routing + RBJ biquad parametric EQ
+                      </span>
+                    </div>
+
+                    <div className="p-2 rounded bg-white/[0.03] border border-white/5 flex flex-col gap-0.5">
+                      <span className="text-white font-semibold flex items-center gap-1.5">
+                        <Music size={11} className="text-fl-pink" /> Sampler & Resampler
+                      </span>
+                      <span className="text-fl-dim">
+                        4-Point Hermite cubic interpolation + WSOLA time-stretch
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* License & Standards */}
+                <div className="pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-fl-dim">
+                  <span className="flex items-center gap-1 text-emerald-400 font-mono">
+                    <CheckCircle2 size={11} /> GPL-3.0 + VST3/CLAP Dynamic Link Exception
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setAboutModalOpen(false)}
+                    className="px-3 py-1 rounded bg-fl-orange hover:bg-amber-400 text-black font-bold cursor-pointer transition-colors"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
             </div>

@@ -312,52 +312,57 @@ fn schedule_channel_tick_events(
         });
 
         // 1. Step Sequencer Events
-        for (step_idx, step) in ch_data.steps.iter().enumerate() {
-            if !step.active {
-                continue;
-            }
-            let swung_tick = compute_swung_step_tick(
-                step_idx as u32,
-                metrics.ppq,
-                global_swing_ratio,
-                channel.swing_multiplier,
-                step.shift_ticks,
-            );
-            if swung_tick == local_tick {
-                let dur_ticks = ((metrics.ticks_per_sixteenth as f32) * step.gate_ratio)
-                    .round()
-                    .max(1.0) as f64;
-                let duration_frames =
-                    (dur_ticks * metrics.samples_per_tick).round().max(1.0) as u64;
+        // 1. Step Sequencer: Evaluated when the channel has no active Piano Roll notes.
+        // In FL Studio, drawing notes into the Piano Roll supersedes the 16-step rack
+        // to prevent double-voice phase clashes, amplitude doubling, and clipping.
+        if ch_data.notes.is_empty() {
+            for (step_idx, step) in ch_data.steps.iter().enumerate() {
+                if !step.active {
+                    continue;
+                }
+                let swung_tick = compute_swung_step_tick(
+                    step_idx as u32,
+                    metrics.ppq,
+                    global_swing_ratio,
+                    channel.swing_multiplier,
+                    step.shift_ticks,
+                );
+                if swung_tick == local_tick {
+                    let dur_ticks = ((metrics.ticks_per_sixteenth as f32) * step.gate_ratio)
+                        .round()
+                        .max(1.0) as f64;
+                    let duration_frames =
+                        (dur_ticks * metrics.samples_per_tick).round().max(1.0) as u64;
 
-                let midi_note = (channel.root_midi_note as i16
-                    + channel.pitch_semitones as i16
-                    + step.pitch_offset_semitones as i16)
-                    .clamp(0, 127) as u8;
-                let total_cents =
-                    (channel.pitch_cents as f64) + (step.fine_pitch_cents as f64);
-                let freq_hz = midi_note_to_frequency_hz(midi_note, total_cents);
-                let vel_norm = (step.velocity.min(127) as f32) / 127.0;
+                    let midi_note = (channel.root_midi_note as i16
+                        + channel.pitch_semitones as i16
+                        + step.pitch_offset_semitones as i16)
+                        .clamp(0, 127) as u8;
+                    let total_cents =
+                        (channel.pitch_cents as f64) + (step.fine_pitch_cents as f64);
+                    let freq_hz = midi_note_to_frequency_hz(midi_note, total_cents);
+                    let vel_norm = (step.velocity.min(127) as f32) / 127.0;
 
-                let pod = ScheduledAudioEventPod {
-                    sample_frame: tick_sample_frame,
-                    duration_frames,
-                    channel_index: channel.index,
-                    assigned_mixer_insert: channel.assigned_mixer_insert,
-                    voice_color_group: 0,
-                    kind: AudioScheduledEventKind::NoteOn,
-                    waveform: channel.waveform,
-                    sample_slot,
-                    root_midi_note: channel.root_midi_note,
-                    midi_note,
-                    velocity: step.velocity,
-                    start_freq_hz: freq_hz,
-                    target_freq_hz: freq_hz,
-                    pan: (channel.pan + step.fine_pan).clamp(-1.0, 1.0),
-                    gain_linear: ch_gain * vel_norm,
-                };
-                let _ = event_producer.push(pod);
-                count += 1;
+                    let pod = ScheduledAudioEventPod {
+                        sample_frame: tick_sample_frame,
+                        duration_frames,
+                        channel_index: channel.index,
+                        assigned_mixer_insert: channel.assigned_mixer_insert,
+                        voice_color_group: 0,
+                        kind: AudioScheduledEventKind::NoteOn,
+                        waveform: channel.waveform,
+                        sample_slot,
+                        root_midi_note: channel.root_midi_note,
+                        midi_note,
+                        velocity: step.velocity,
+                        start_freq_hz: freq_hz,
+                        target_freq_hz: freq_hz,
+                        pan: (channel.pan + step.fine_pan).clamp(-1.0, 1.0),
+                        gain_linear: ch_gain * vel_norm,
+                    };
+                    let _ = event_producer.push(pod);
+                    count += 1;
+                }
             }
         }
 

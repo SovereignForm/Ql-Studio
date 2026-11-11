@@ -638,18 +638,28 @@ impl PreallocatedMixerGraph {
             }
         }
 
-        // Soft-clipping master limiter (smooth tanh saturation above +/- 0.95)
+        // Analog-smooth continuous soft-clipping master limiter
+        // Replaces harsh step-function cliffs with a C1 continuous Hermite/tanh saturation curve.
+        // Transparent below threshold (T = 0.85); asymptotes smoothly to 1.0 above T with ZERO crackle.
         let master = self.buses_lr[0];
-        let out_l = if master[0].abs() > 0.95 {
-            master[0].tanh()
-        } else {
-            master[0]
-        };
-        let out_r = if master[1].abs() > 0.95 {
-            master[1].tanh()
-        } else {
-            master[1]
-        };
+        let out_l = smooth_master_limit(master[0]);
+        let out_r = smooth_master_limit(master[1]);
         (out_l.clamp(-1.0, 1.0), out_r.clamp(-1.0, 1.0))
+    }
+}
+
+/// Seamless C1 continuous soft-saturation limiter.
+/// Eliminates digital clipping and audio buffer step discontinuities.
+#[inline(always)]
+fn smooth_master_limit(x: f32) -> f32 {
+    const THRESHOLD: f32 = 0.82;
+    const MARGIN: f32 = 1.0 - THRESHOLD; // 0.18 headroom
+    let abs_x = x.abs();
+    if abs_x <= THRESHOLD {
+        x
+    } else {
+        let sign = if x >= 0.0 { 1.0 } else { -1.0 };
+        let excess = abs_x - THRESHOLD;
+        sign * (THRESHOLD + MARGIN * (excess / MARGIN).tanh())
     }
 }

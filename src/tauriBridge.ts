@@ -388,6 +388,8 @@ export class QlNativeEngineClient {
     for (const ch of this.webAudioChannels) {
       if (ch.muted || (anySolo && !ch.solo)) continue;
       const chData = pat.channelData[ch.id];
+      // If channel has dedicated piano roll notes, skip step sequencer to avoid double voices
+      if (chData?.notes && chData.notes.length > 0) continue;
       const step = chData?.steps[stepIdx];
       if (!step || !step.active) continue;
 
