@@ -31,6 +31,7 @@ import {
   Check,
   X,
   Settings2,
+  Mic,
 } from "lucide-react";
 import type {
   QlAutomationClip,
@@ -60,6 +61,7 @@ export interface PlaylistArrangerProps {
   readonly isRecording?: boolean;
   readonly recordingTrackIndex?: number;
   readonly onArmTrackRecording?: (trackIndex: number) => void;
+  readonly onOpenRecordPrompt?: () => void;
   readonly onLoadWavSample?: (channelId: string, path: string) => void;
   readonly onTimeStretchClip?: (
     clipId: string,
@@ -760,6 +762,20 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
             className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-fl-deep hover:bg-white/10 text-[10px] text-fl-text border border-black/60 cursor-pointer"
           >
             <Plus size={11} className="text-fl-amber" /> Auto Clip
+          </button>
+
+          <button
+            type="button"
+            onClick={props.onOpenRecordPrompt}
+            title="Record Microphone / Audio into Track"
+            className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+              props.isRecording
+                ? "bg-red-500 text-white animate-pulse shadow-[0_0_8px_#ff3d3d]"
+                : "bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/35"
+            }`}
+          >
+            <Mic size={11} className={props.isRecording ? "text-white" : "text-red-400"} />
+            <span>{props.isRecording ? "RECORDING..." : "Record Mic"}</span>
           </button>
         </div>
 

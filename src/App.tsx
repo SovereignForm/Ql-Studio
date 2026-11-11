@@ -43,6 +43,7 @@ import {
 import {
   DedicatedPluginWindow,
 } from "./components/DedicatedPluginWindow.tsx";
+import { RecordAudioModal } from "./components/RecordAudioModal.tsx";
 import {
   SplashScreen,
 } from "./components/SplashScreen.tsx";
@@ -597,6 +598,7 @@ export const App: React.FC = () => {
   const [loadedPlugins, setLoadedPlugins] = useState<readonly PluginInstanceSummary[]>([]);
 
   // Audio Input & Hardware MIDI States
+  const [recordModalOpen, setRecordModalOpen] = useState(false);
   const [audioSettingsTab, setAudioSettingsTab] = useState<"output" | "input" | "midi">("output");
   const [audioInputDevices, setAudioInputDevices] = useState<readonly AudioInputDeviceInfo[]>([]);
   const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
@@ -629,9 +631,8 @@ export const App: React.FC = () => {
     };
   }, [engineClient]);
 
-  // Load input devices and MIDI ports when opening audio modal
+  // Load input devices and MIDI ports on mount and when modal opens
   useEffect(() => {
-    if (!audioModalOpen) return;
     const loadHardware = async () => {
       try {
         const inDevs = (await engineClient.getAudioInputDevices().catch(() => [])) || [];
@@ -649,7 +650,7 @@ export const App: React.FC = () => {
       }
     };
     void loadHardware();
-  }, [audioModalOpen, engineClient, selectedInputDevice]);
+  }, [audioModalOpen, recordModalOpen, engineClient, selectedInputDevice]);
 
   const isMidiActive = useMemo(() => {
     if (!midiStatus.lastActivityTimestampMs) return false;
@@ -2256,43 +2257,29 @@ export const App: React.FC = () => {
         onStop={handleStop}
         onRecord={async () => {
           try {
-            if (isPlaying) {
-              if (!isRecording) {
-                await engineClient.startRecording(songTick, recordingTrackIndex).catch(() => {});
-                setIsRecording(true);
-                setStatusMessage(`🔴 RECORDING LIVE AUDIO to Track ${recordingTrackIndex + 1}…`);
-              } else {
-                const rec = await engineClient.stopRecording().catch(() => null);
-                setIsRecording(false);
-                if (rec) {
-                  const assignedTrack = rec.trackIndex ?? recordingTrackIndex;
-                  const newClip: QlPlaylistClip = {
-                    id: `audio_clip_${Date.now()}`,
-                    trackIndex: assignedTrack,
-                    startTick: rec.startTick,
-                    lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
-                    kind: "audio",
-                    referenceId: rec.filePath,
-                    name: rec.fileName,
-                    colorHex: "#00e676",
-                  };
-                  setPlaylist((prev) => ({
-                    ...prev,
-                    clips: [...prev.clips, newClip],
-                  }));
-                  setStatusMessage(`🎙️ Recorded audio saved & placed on Track ${assignedTrack + 1}: ${rec.fileName}`);
-                }
+            if (isRecording) {
+              const rec = await engineClient.stopRecording().catch(() => null);
+              setIsRecording(false);
+              if (rec) {
+                const assignedTrack = rec.trackIndex ?? recordingTrackIndex;
+                const newClip: QlPlaylistClip = {
+                  id: `audio_clip_${Date.now()}`,
+                  trackIndex: assignedTrack,
+                  startTick: rec.startTick,
+                  lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+                  kind: "audio",
+                  referenceId: rec.filePath,
+                  name: rec.fileName,
+                  colorHex: "#00e676",
+                };
+                setPlaylist((prev) => ({
+                  ...prev,
+                  clips: [...prev.clips, newClip],
+                }));
+                setStatusMessage(`🎙️ Recorded audio saved & placed on Track ${assignedTrack + 1}: ${rec.fileName}`);
               }
             } else {
-              setIsRecording((r) => {
-                const next = !r;
-                setStatusMessage(
-                  next
-                    ? `🎙️ Recording Armed on Track ${recordingTrackIndex + 1}. Press Play (Space) to record.`
-                    : "Recording Disarmed."
-                );
-                return next;
-              });
+              setRecordModalOpen(true);
             }
           } catch (err) {
             console.warn("Record toggle notice:", err);
@@ -2429,6 +2416,7 @@ export const App: React.FC = () => {
               isPlaying={isPlaying}
               isRecording={isRecording}
               recordingTrackIndex={recordingTrackIndex}
+              onOpenRecordPrompt={() => setRecordModalOpen(true)}
               onArmTrackRecording={(trackIdx) => {
                 setRecordingTrackIndex(trackIdx);
                 setIsRecording((curr) => {
@@ -2685,19 +2673,18 @@ export const App: React.FC = () => {
                           }}
                         />
                         <span className="text-[10px] font-bold">
-                          {isRecording ? "RECORDING ARMED & ACTIVE" : "RECORDING DISARMED"}
+                          {isRecording ? "RECORDING ACTIVE" : "MICROPHONE READY"}
                         </span>
                       </div>
                       <button
                         type="button"
-                        onClick={() => setIsRecording((r) => !r)}
-                        className={`px-3 py-1 rounded text-[10px] font-bold cursor-pointer ${
-                          isRecording
-                            ? "bg-red-500 text-white"
-                            : "bg-fl-raised text-fl-text hover:bg-white/10"
-                        }`}
+                        onClick={() => {
+                          setAudioModalOpen(false);
+                          setRecordModalOpen(true);
+                        }}
+                        className="px-3 py-1 rounded text-[10px] font-bold bg-red-500/20 hover:bg-red-500/40 text-red-300 border border-red-500/50 cursor-pointer"
                       >
-                        {isRecording ? "Disarm Recording" : "Arm Recording"}
+                        Open Record Studio Dialog
                       </button>
                     </div>
                   </div>
@@ -2960,6 +2947,54 @@ export const App: React.FC = () => {
           onSetParameter={handleSetPluginParameter}
           onUnloadPlugin={handleUnloadPlugin}
           onOpenPluginGui={handleOpenPluginGui}
+        />
+
+        {/* Record Audio & Vocals Modal */}
+        <RecordAudioModal
+          open={recordModalOpen}
+          isRecording={isRecording}
+          isPlaying={isPlaying}
+          inputDevices={audioInputDevices}
+          selectedDevice={selectedInputDevice}
+          destinationTrackIndex={recordingTrackIndex}
+          trackCount={24}
+          liveMonitoring={liveMonitoring}
+          onSelectDevice={setSelectedInputDevice}
+          onSelectTrack={setRecordingTrackIndex}
+          onToggleMonitoring={handleToggleMonitoring}
+          onStartRecording={async () => {
+            if (!isPlaying) {
+              setIsRecording(true);
+              await handlePlayPause();
+            } else {
+              await engineClient.startRecording(songTick, recordingTrackIndex).catch(() => {});
+              setIsRecording(true);
+              setStatusMessage(`🔴 RECORDING LIVE AUDIO to Track ${recordingTrackIndex + 1}…`);
+            }
+          }}
+          onStopRecording={async () => {
+            const rec = await engineClient.stopRecording().catch(() => null);
+            setIsRecording(false);
+            if (rec) {
+              const assignedTrack = rec.trackIndex ?? recordingTrackIndex;
+              const newClip: QlPlaylistClip = {
+                id: `audio_clip_${Date.now()}`,
+                trackIndex: assignedTrack,
+                startTick: rec.startTick,
+                lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
+                kind: "audio",
+                referenceId: rec.filePath,
+                name: rec.fileName,
+                colorHex: "#00e676",
+              };
+              setPlaylist((prev) => ({
+                ...prev,
+                clips: [...prev.clips, newClip],
+              }));
+              setStatusMessage(`🎙️ Recorded audio saved & placed on Track ${assignedTrack + 1}: ${rec.fileName}`);
+            }
+          }}
+          onClose={() => setRecordModalOpen(false)}
         />
 
         {/* Project Launcher & Welcome Hub Modal */}
