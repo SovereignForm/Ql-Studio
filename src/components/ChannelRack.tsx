@@ -3,7 +3,7 @@
  * buttons with context menu, mixer-target LCD, skeuomorphic 4-step-grouped grid, and a
  * Graph Editor drawer (velocity / pan / pitch) aligned under the steps of the selected channel.
  */
-import { Activity, ChevronDown, FolderOpen, Plus, Sliders, Volume2, Waves, X, Zap } from "lucide-react";
+import { Activity, ChevronDown, FolderOpen, Maximize2, Minimize2, Plus, Sliders, Volume2, Waves, X, Zap } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import type { QlChannel, QlPattern, QlStep, WaveformShape } from "../schemas.ts";
 import { Knob, Led, formatDb, formatPan } from "../ui/primitives.tsx";
@@ -550,6 +550,7 @@ const ChannelSynthModal: React.FC<{
   readonly onUpdateChannel: (id: string, patch: ChannelPatch) => void;
   readonly onAuditionChannel?: (id: string, note?: number) => void;
 }> = ({ channel, onClose, onUpdateChannel, onAuditionChannel }) => {
+  const [isMaximized, setIsMaximized] = useState(false);
   const [attackMs, setAttackMs] = useState(15);
   const [decayMs, setDecayMs] = useState(180);
   const [sustain, setSustain] = useState(0.65);
@@ -667,13 +668,21 @@ const ChannelSynthModal: React.FC<{
 
   return (
     <div
-      className="fixed inset-0 z-[9999] bg-black/75 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+      className={`fixed inset-0 z-[9999] bg-black/75 backdrop-blur-xs flex items-center justify-center animate-in fade-in duration-150 ${
+        isMaximized ? "p-0" : "p-4"
+      }`}
       onPointerDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (!isMaximized && e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-[#1e222a] border border-fl-orange/70 rounded-lg w-full max-w-xl shadow-2xl overflow-hidden flex flex-col fl-bevel">
-        <div className="h-9 px-3 bg-gradient-to-r from-[#292f3a] to-[#20252e] border-b border-black/80 flex items-center justify-between">
+      <div
+        className={`bg-[#1e222a] border border-fl-orange/70 shadow-2xl overflow-hidden flex flex-col fl-bevel transition-all duration-150 ${
+          isMaximized
+            ? "w-full h-full rounded-none max-w-none max-h-none"
+            : "rounded-lg w-full max-w-2xl max-h-[90vh]"
+        }`}
+      >
+        <div className="h-9 px-3 bg-gradient-to-r from-[#292f3a] to-[#20252e] border-b border-black/80 flex items-center justify-between shrink-0 select-none">
           <div className="flex items-center gap-2">
             <Waves size={15} className="text-fl-orange animate-pulse" />
             <span className="font-bold text-[12px] text-white">
@@ -681,16 +690,27 @@ const ChannelSynthModal: React.FC<{
               <span className="text-fl-orange font-mono">{channel.name}</span>
             </span>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-fl-dim hover:text-white p-1 rounded hover:bg-white/10 cursor-pointer"
-          >
-            <X size={15} />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title={isMaximized ? "Restore Window" : "Maximize Fullscreen"}
+              onClick={() => setIsMaximized((v) => !v)}
+              className="text-fl-dim hover:text-white p-1 rounded hover:bg-white/10 cursor-pointer"
+            >
+              {isMaximized ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+            <button
+              type="button"
+              title="Close"
+              onClick={onClose}
+              className="text-fl-dim hover:text-white p-1 rounded hover:bg-red-500/70 cursor-pointer"
+            >
+              <X size={15} />
+            </button>
+          </div>
         </div>
 
-        <div className="p-4 space-y-4 max-h-[85vh] overflow-y-auto fl-scroll text-[11px]">
+        <div className="p-4 space-y-4 flex-1 overflow-y-auto fl-scroll text-[11px]">
           <div className="flex flex-col gap-1.5 bg-[#171a21] p-2.5 rounded border border-black/60 fl-inset">
             <span className="text-[10px] font-bold text-fl-dim flex items-center gap-1">
               <Zap size={11} className="text-fl-amber" />

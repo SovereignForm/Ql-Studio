@@ -1171,7 +1171,7 @@ pub fn trigger_channel_note(
 
     let pod = ScheduledAudioEventPod {
         sample_frame: cur_frame,
-        duration_frames: 48000 * 2, // 2s audition envelope
+        duration_frames: 48000 / 3, // 330ms audition envelope (prevents lingering drone tones)
         channel_index: ch_index,
         assigned_mixer_insert: assigned_insert,
         voice_color_group: 0,
