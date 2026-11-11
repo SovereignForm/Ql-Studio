@@ -539,7 +539,7 @@ export const App: React.FC = () => {
   const mixerRef = useRef<QlMixerState | null>(null);
   const playlistRef = useRef<QlPlaylistState | null>(null);
 
-  const [projectTitle, setProjectTitle] = useState("Ql Studio — Audio Production Session");
+  const [projectTitle, setProjectTitle] = useState("QuickLayer Studio — Audio Production Session");
   const [bpm, setBpm] = useState(140.0);
   const [ppq, setPpq] = useState<PpqResolution>(96);
   const [swingRatio, setSwingRatio] = useState(0.5);
@@ -1716,10 +1716,10 @@ export const App: React.FC = () => {
       pushHistory();
       const nextTitle =
         template === "empty"
-          ? "Ql Studio — Empty Template"
+          ? "QuickLayer Studio — Empty Template"
           : template === "basic_808"
-            ? "Ql Studio — Basic 808 Studio Kit"
-            : "Ql Studio — Trap 140 BPM Session";
+            ? "QuickLayer Studio — Basic 808 Studio Kit"
+            : "QuickLayer Studio — Trap 140 BPM Session";
       setProjectTitle(nextTitle);
       setBpm(template === "basic_808" ? 128 : 140);
       setChannels(INITIAL_CHANNELS);
@@ -2806,7 +2806,10 @@ export const App: React.FC = () => {
               </div>
               <div className="p-4 space-y-2.5 text-[11px] text-fl-text">
                 <p className="font-semibold text-white">
-                  Ql Studio — Professional Digital Audio Workstation
+                  QuickLayer (QL) Studio — Professional Digital Audio Workstation
+                </p>
+                <p className="text-fl-orange font-medium text-[10px]">
+                  Layer, Compose and Master with Zero Latency
                 </p>
                 <p className="text-fl-dim leading-relaxed">
                   Built on Tauri v2 + Rust (<code className="text-fl-amber">cpal</code>,{" "}

@@ -123,7 +123,7 @@ export const WelcomeHubModal: React.FC<WelcomeHubModalProps> = ({
             />
             <div className="flex flex-col">
               <span className="font-black text-sm tracking-wider text-white flex items-center gap-2">
-                QL STUDIO · WELCOME HUB & LAUNCHER
+                QUICKLAYER (QL) STUDIO · WELCOME HUB
                 <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-fl-orange/20 text-fl-orange border border-fl-orange/40">
                   v1.0.0
                 </span>

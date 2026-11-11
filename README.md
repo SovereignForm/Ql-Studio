@@ -1,11 +1,12 @@
 <p align="center">
-  <img src="public/logo.svg" width="160" height="160" alt="Ql Studio Logo" />
+  <img src="public/logo.svg" width="160" height="160" alt="QuickLayer Studio Logo" />
 </p>
 
-<h1 align="center">Ql Studio</h1>
+<h1 align="center">QuickLayer (QL) Studio</h1>
 
 <p align="center">
-  <b>High-Performance Next-Generation Digital Audio Workstation (DAW) & Desktop Music Production Suite</b><br>
+  <b>Layer, Compose and Master with Zero Latency</b><br>
+  High-Performance Next-Generation Digital Audio Workstation (DAW) & Desktop Music Production Suite<br>
   Engineered with React 19, Tailwind CSS v4, HTML5 Canvas, and Tauri v2 (Rust Real-Time Audio Core).
 </p>
 
@@ -216,4 +217,4 @@ Pre-built binaries are generated automatically on release:
 
 ## 📄 License
 
-QL Studio is licensed under the **GNU General Public License v3.0 (GPL-3.0)** with **Plugin Hosting & Dynamic Link Exceptions** allowing proprietary VST3 / CLAP plugins to load seamlessly.
+QuickLayer (QL) Studio is licensed under the **GNU General Public License v3.0 (GPL-3.0)** with **Plugin Hosting & Dynamic Link Exceptions** allowing proprietary VST3 / CLAP plugins to load seamlessly.

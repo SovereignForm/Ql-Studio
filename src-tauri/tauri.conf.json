@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Ql Studio",
+  "productName": "QuickLayer Studio",
   "version": "1.0.0",
   "identifier": "com.qlstudio.daw",
   "build": {
@@ -10,7 +10,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Ql Studio — Digital Audio Workstation",
+        "title": "QuickLayer Studio — Digital Audio Workstation",
         "width": 1440,
         "height": 900,
         "resizable": true

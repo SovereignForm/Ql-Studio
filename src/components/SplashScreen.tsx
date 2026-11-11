@@ -97,7 +97,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
         {/* Title & Brand Typography */}
         <div className="flex items-center gap-2 mb-1">
           <h1 className="text-3xl font-black tracking-widest text-white drop-shadow">
-            QL STUDIO
+            QUICKLAYER <span className="text-fl-orange">STUDIO</span>
           </h1>
           <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-fl-orange/20 border border-fl-orange/50 text-fl-orange">
             v1.0.0
@@ -105,7 +105,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
         </div>
 
         <p className="text-[11px] font-medium tracking-wide text-fl-dim mb-6 text-center">
-          PROFESSIONAL DIGITAL AUDIO WORKSTATION & DSP ENGINE
+          LAYER, COMPOSE AND MASTER WITH ZERO LATENCY &bull; QL AUDIO ENGINE
         </p>
 
         {/* Neon Dual-Color Loading Bar */}

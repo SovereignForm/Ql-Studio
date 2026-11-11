@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Ql Studio — High-Performance DAW Engine (React + Tailwind + Canvas + Tauri v2 Rust Core)",
+  "description": "QuickLayer (QL) Studio — Layer, Compose and Master with Zero Latency (React 19 + Tauri v2 Rust Core)",
   "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "vite",
