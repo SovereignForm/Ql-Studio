@@ -516,7 +516,7 @@ export const App: React.FC = () => {
       const saved = localStorage.getItem("ql_visual_sync_offset_ms");
       if (saved !== null) return Number(saved);
     }
-    return 50; // 50 ms default: Standard PipeWire/ALSA/WASAPI DAC & queue acoustic compensation
+    return 0; // 0 ms default: Hardware audio clock is already dynamically compensated for DAC and driver latency!
   });
   const visualSyncOffsetMsRef = useRef(visualSyncOffsetMs);
   visualSyncOffsetMsRef.current = visualSyncOffsetMs;
@@ -1060,7 +1060,13 @@ export const App: React.FC = () => {
           const ticksPerSec = (bpm / 60.0) * ppq;
           const initialOffsetMs = (songTick / ticksPerSec) * 1000;
           playbackStartMsRef.current = performance.now() - initialOffsetMs;
-          void engineClient.play().then((s) => setIsPlaying(s.isPlaying));
+          if (songTick > 0) {
+            void engineClient.seekTick(songTick).then(() => {
+              void engineClient.play().then((s) => setIsPlaying(s.isPlaying));
+            });
+          } else {
+            void engineClient.play().then((s) => setIsPlaying(s.isPlaying));
+          }
         }
       } else if (e.key === "F5") {
         e.preventDefault();
@@ -1234,6 +1240,15 @@ export const App: React.FC = () => {
     };
   }, [isPlaying, bpm, ppq, engineClient]);
 
+  // Periodic lock-free hardware DAC clock resync against Rust audio frame counter
+  useEffect(() => {
+    if (!isPlaying) return;
+    const interval = setInterval(() => {
+      void engineClient.getPlaybackClock().catch(() => {});
+    }, 150);
+    return () => clearInterval(interval);
+  }, [isPlaying, engineClient]);
+
   const handleAuditionChannel = useCallback(
     (channelId: string, midiNote?: number) => {
       void engineClient.triggerChannelNote(channelId, midiNote, 100).catch(() => {});
@@ -1273,6 +1288,9 @@ export const App: React.FC = () => {
         const ticksPerSec = (bpm / 60.0) * ppq;
         const initialOffsetMs = (songTick / ticksPerSec) * 1000;
         playbackStartMsRef.current = performance.now() - initialOffsetMs;
+        if (songTick > 0) {
+          await engineClient.seekTick(songTick).catch(() => {});
+        }
         const snap = await engineClient.play();
         setIsPlaying(snap.isPlaying);
       }
@@ -2342,6 +2360,7 @@ export const App: React.FC = () => {
                 setActiveStep(
                   Math.floor(tick / (ppq / 4)) % (activePattern.stepCount || 16),
                 );
+                void engineClient.seekTick(tick).catch(() => {});
               }}
               onTimeStretchClip={handleTimeStretchClip}
             />

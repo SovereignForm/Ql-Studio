@@ -16,7 +16,7 @@ use crate::sampler::{
 use crate::scheduler::{NativeLookaheadScheduler, RealTimeAudioEngine};
 use crate::plugins::{PluginHostManager, SharedPluginHost};
 use crate::schemas::{
-    AudioScheduledEventKind, AudioSettingsSnapshot, EngineStatusSnapshot, PlayMode, PluginDescriptor,
+    AudioScheduledEventKind, AudioSettingsSnapshot, EngineStatusSnapshot, PlayMode, PlaybackClockSnapshot, PluginDescriptor,
     PluginInstanceSummary, PpqResolution, QlChannel, QlMixerSend, QlMixerState, QlPattern,
     QlPlaylistState, RealTimeCommand, ScheduledAudioEventPod, TimeSignature, TimeStretchResult,
     WaveformShape, MAX_MIXER_INSERTS, MAX_MIXER_SENDS,
@@ -51,6 +51,7 @@ pub struct QlEngineController {
     pub shared: Arc<Mutex<SharedLookaheadState>>,
     pub is_playing_atomic: Arc<AtomicBool>,
     pub current_frame_estimate: Arc<AtomicU64>,
+    pub hardware_latency_frames: Arc<AtomicU64>,
     pub plugin_host: SharedPluginHost,
     pub midi_manager: Arc<Mutex<crate::midi::MidiManager>>,
     pub audio_recorder: Arc<Mutex<crate::audio_record::AudioRecorderManager>>,
@@ -75,6 +76,7 @@ impl QlEngineController {
 
         let is_playing_atomic = Arc::new(AtomicBool::new(false));
         let current_frame_estimate = Arc::new(AtomicU64::new(0));
+        let hardware_latency_frames = Arc::new(AtomicU64::new(DEFAULT_HARDWARE_BUFFER_FRAMES as u64));
 
         let (sample_rate, device_name, actual_buf_frames, stream_holder) =
             Self::try_spawn_cpal_stream(
@@ -87,6 +89,7 @@ impl QlEngineController {
                 midi_cmd_consumer,
                 monitor_consumer,
                 current_frame_estimate.clone(),
+                hardware_latency_frames.clone(),
             );
 
         // Materialize starter drum kit .wav files into ../samples
@@ -180,6 +183,7 @@ impl QlEngineController {
             shared,
             is_playing_atomic,
             current_frame_estimate,
+            hardware_latency_frames,
             plugin_host,
             midi_manager,
             audio_recorder,
@@ -199,6 +203,7 @@ impl QlEngineController {
         midi_cmd_consumer: Consumer<RealTimeCommand>,
         monitor_consumer: Consumer<f32>,
         frame_counter: Arc<AtomicU64>,
+        hardware_latency_frames: Arc<AtomicU64>,
     ) -> (u32, String, u32, Option<StreamHolder>) {
         let host = cpal::default_host();
         let Some(device) = host.default_output_device() else {
@@ -235,6 +240,7 @@ impl QlEngineController {
                 .with_live_monitor(monitor_consumer),
         );
         let fc_for_cb = frame_counter.clone();
+        let hl_for_cb = hardware_latency_frames.clone();
 
         // Check whether the device supports explicit fixed buffer sizes via supported_output_configs
         let supports_fixed = device
@@ -258,9 +264,17 @@ impl QlEngineController {
 
         let stream_res = device.build_output_stream(
             &chosen_config,
-            move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            move |data: &mut [f32], info: &cpal::OutputCallbackInfo| {
                 rt_engine.process_interleaved_f32(data, channels);
                 fc_for_cb.store(rt_engine.current_sample_frame, Ordering::Relaxed);
+                let ts = info.timestamp();
+                if let Some(dur) = ts.playback.duration_since(&ts.callback) {
+                    let lat_frames = (dur.as_secs_f64() * sample_rate as f64).round() as u64;
+                    let total = lat_frames.max(clamped_buf as u64);
+                    hl_for_cb.store(total, Ordering::Relaxed);
+                } else {
+                    hl_for_cb.store(clamped_buf as u64, Ordering::Relaxed);
+                }
             },
             move |err| {
                 eprintln!("[QlStudio Audio Stream Warning]: {err}");
@@ -300,7 +314,7 @@ pub fn play(state: State<'_, QlEngineController>) -> Result<EngineStatusSnapshot
     } = &mut *guard;
     scheduler.advance_lookahead(frame, pattern, channels, event_producer);
 
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -309,7 +323,7 @@ pub fn pause(state: State<'_, QlEngineController>) -> Result<EngineStatusSnapsho
     guard.scheduler.is_playing = false;
     let _ = guard.command_producer.push(RealTimeCommand::Pause);
     state.is_playing_atomic.store(false, Ordering::Release);
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -320,7 +334,7 @@ pub fn stop(state: State<'_, QlEngineController>) -> Result<EngineStatusSnapshot
     let _ = guard.command_producer.push(RealTimeCommand::Stop);
     state.is_playing_atomic.store(false, Ordering::Release);
     state.current_frame_estimate.store(0, Ordering::Release);
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -333,7 +347,7 @@ pub fn set_bpm(
     }
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.scheduler.set_bpm(bpm);
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -348,7 +362,7 @@ pub fn set_swing(
     }
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.scheduler.set_swing(swing_ratio);
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -360,7 +374,7 @@ pub fn update_pattern(
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.pattern = pattern;
     guard.channels = channels;
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -428,7 +442,7 @@ pub fn get_engine_status(
     state: State<'_, QlEngineController>,
 ) -> Result<EngineStatusSnapshot, String> {
     let guard = state.shared.lock().map_err(|e| e.to_string())?;
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -614,6 +628,7 @@ pub fn set_audio_buffer_size(
             midi_cmd_cons,
             monitor_cons,
             state.current_frame_estimate.clone(),
+            state.hardware_latency_frames.clone(),
         );
 
     if let Ok(mm) = state.midi_manager.lock() {
@@ -697,19 +712,110 @@ pub fn toggle_maximize(window: tauri::Window) -> Result<bool, String> {
     }
 }
 
-fn snapshot_from_guard(guard: &SharedLookaheadState) -> EngineStatusSnapshot {
+fn snapshot_from_guard(
+    guard: &SharedLookaheadState,
+    state: &QlEngineController,
+) -> EngineStatusSnapshot {
+    let cur_frame = state.current_frame_estimate.load(Ordering::Relaxed);
+    let lat_frames = state.hardware_latency_frames.load(Ordering::Relaxed);
+    let audible_frame = cur_frame.saturating_sub(lat_frames);
+    let samples_per_tick = guard.scheduler.metrics.samples_per_tick;
+    let audible_tick = if samples_per_tick > 0.0 {
+        (audible_frame as f64 / samples_per_tick).floor() as u64
+    } else {
+        0
+    };
+    let sample_rate = guard.scheduler.metrics.sample_rate;
+    let estimated_latency_ms = if sample_rate > 0 {
+        (lat_frames as f64 / sample_rate as f64) * 1000.0
+    } else {
+        0.0
+    };
+
     EngineStatusSnapshot {
         is_playing: guard.scheduler.is_playing,
         bpm: guard.scheduler.metrics.bpm,
         ppq: guard.scheduler.metrics.ppq as u16,
         swing_ratio: guard.scheduler.global_swing_ratio,
-        sample_rate: guard.scheduler.metrics.sample_rate,
+        sample_rate,
         buffer_size_frames: guard.buffer_size_frames,
         next_unscheduled_tick: guard.scheduler.next_unscheduled_tick,
         audio_stream_active: guard.audio_stream_active,
         play_mode: guard.scheduler.play_mode,
-        song_tick: guard.scheduler.next_unscheduled_tick,
+        song_tick: audible_tick,
+        audible_frame,
+        estimated_latency_ms,
     }
+}
+
+#[tauri::command]
+pub fn get_playback_clock(
+    state: State<'_, QlEngineController>,
+) -> Result<PlaybackClockSnapshot, String> {
+    let cur_frame = state.current_frame_estimate.load(Ordering::Relaxed);
+    let lat_frames = state.hardware_latency_frames.load(Ordering::Relaxed);
+    let audible_frame = cur_frame.saturating_sub(lat_frames);
+    let is_playing = state.is_playing_atomic.load(Ordering::Relaxed);
+
+    let guard = state.shared.lock().map_err(|e| e.to_string())?;
+    let sample_rate = guard.scheduler.metrics.sample_rate;
+    let buffer_size_frames = guard.buffer_size_frames;
+    let bpm = guard.scheduler.metrics.bpm;
+    let ppq = guard.scheduler.metrics.ppq as u16;
+    let samples_per_tick = guard.scheduler.metrics.samples_per_tick;
+
+    let audible_tick = if samples_per_tick > 0.0 {
+        (audible_frame as f64 / samples_per_tick).floor() as u64
+    } else {
+        0
+    };
+    let audible_time_sec = if sample_rate > 0 {
+        audible_frame as f64 / sample_rate as f64
+    } else {
+        0.0
+    };
+    let estimated_latency_ms = if sample_rate > 0 {
+        (lat_frames as f64 / sample_rate as f64) * 1000.0
+    } else {
+        0.0
+    };
+
+    Ok(PlaybackClockSnapshot {
+        is_playing,
+        sample_rate,
+        buffer_size_frames,
+        current_frame: cur_frame,
+        audible_frame,
+        audible_tick,
+        audible_time_sec,
+        estimated_latency_ms,
+        bpm,
+        ppq,
+    })
+}
+
+#[tauri::command]
+pub fn seek_tick(
+    tick: u64,
+    state: State<'_, QlEngineController>,
+) -> Result<EngineStatusSnapshot, String> {
+    let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
+    let samples_per_tick = guard.scheduler.metrics.samples_per_tick;
+    let target_frame = (tick as f64 * samples_per_tick).round() as u64;
+    guard.scheduler.next_unscheduled_tick = tick;
+    let _ = guard.command_producer.push(RealTimeCommand::Seek { target_frame });
+    state.current_frame_estimate.store(target_frame, Ordering::Release);
+    if guard.scheduler.is_playing {
+        let SharedLookaheadState {
+            scheduler,
+            pattern,
+            channels,
+            event_producer,
+            ..
+        } = &mut *guard;
+        scheduler.advance_lookahead(target_frame, pattern, channels, event_producer);
+    }
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -719,7 +825,7 @@ pub fn set_play_mode(
 ) -> Result<EngineStatusSnapshot, String> {
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.scheduler.set_play_mode(mode);
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]
@@ -730,7 +836,7 @@ pub fn update_arrangement(
 ) -> Result<EngineStatusSnapshot, String> {
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
     guard.scheduler.update_arrangement(playlist, patterns);
-    Ok(snapshot_from_guard(&guard))
+    Ok(snapshot_from_guard(&guard, &state))
 }
 
 #[tauri::command]

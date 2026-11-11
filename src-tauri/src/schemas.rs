@@ -219,6 +219,9 @@ pub enum RealTimeCommand {
     Play,
     Pause,
     Stop,
+    Seek {
+        target_frame: u64,
+    },
     SetInsertParams {
         insert_index: u8,
         pan: f32,
@@ -378,6 +381,25 @@ pub struct EngineStatusSnapshot {
     pub play_mode: PlayMode,
     #[serde(default)]
     pub song_tick: u64,
+    #[serde(default)]
+    pub audible_frame: u64,
+    #[serde(default)]
+    pub estimated_latency_ms: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackClockSnapshot {
+    pub is_playing: bool,
+    pub sample_rate: u32,
+    pub buffer_size_frames: u32,
+    pub current_frame: u64,
+    pub audible_frame: u64,
+    pub audible_tick: u64,
+    pub audible_time_sec: f64,
+    pub estimated_latency_ms: f64,
+    pub bpm: f64,
+    pub ppq: u16,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

@@ -684,6 +684,14 @@ impl RealTimeAudioEngine {
                     v.active = false;
                 }
             }
+            RealTimeCommand::Seek { target_frame } => {
+                self.current_sample_frame = target_frame;
+                self.pending_event = None;
+                while self.event_consumer.pop().is_ok() {}
+                for v in &mut self.voices {
+                    v.active = false;
+                }
+            }
             RealTimeCommand::SetInsertParams {
                 insert_index,
                 pan,

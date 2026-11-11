@@ -40,6 +40,21 @@ export interface NativeEngineStatusSnapshot {
   readonly audioStreamActive: boolean;
   readonly playMode?: PlayMode;
   readonly songTick?: number;
+  readonly audibleFrame?: number;
+  readonly estimatedLatencyMs?: number;
+}
+
+export interface PlaybackClockSnapshot {
+  readonly isPlaying: boolean;
+  readonly sampleRate: number;
+  readonly bufferSizeFrames: number;
+  readonly currentFrame: number;
+  readonly audibleFrame: number;
+  readonly audibleTick: number;
+  readonly audibleTimeSec: number;
+  readonly estimatedLatencyMs: number;
+  readonly bpm: number;
+  readonly ppq: number;
 }
 
 export interface AudioSettingsSnapshot {
@@ -271,6 +286,13 @@ export class QlNativeEngineClient {
   private webAudioNextStepTime = 0;
   private webAudioPlaybackStartAudioTime = 0;
 
+  private hwClockAnchor = {
+    audibleSec: 0,
+    capturedPerformanceNow: 0,
+    isPlaying: false,
+    estimatedLatencyMs: 0,
+  };
+
   public get isNativeRuntime(): boolean {
     return typeof window !== "undefined" && isTauri();
   }
@@ -404,10 +426,74 @@ export class QlNativeEngineClient {
   }
 
   public getAudioElapsedSeconds(): number {
-    if (!this.isNativeRuntime && this.webAudioCtx && this.fallbackStatus.isPlaying) {
+    if (this.isNativeRuntime) {
+      if (!this.hwClockAnchor.isPlaying) {
+        return this.hwClockAnchor.audibleSec;
+      }
+      const elapsedSinceSync = (performance.now() - this.hwClockAnchor.capturedPerformanceNow) / 1000.0;
+      return Math.max(0, this.hwClockAnchor.audibleSec + elapsedSinceSync);
+    }
+    if (this.webAudioCtx && this.fallbackStatus.isPlaying) {
       return Math.max(0, this.webAudioCtx.currentTime - this.webAudioPlaybackStartAudioTime);
     }
     return -1;
+  }
+
+  public getEstimatedHardwareLatencyMs(): number {
+    return this.hwClockAnchor.estimatedLatencyMs;
+  }
+
+  private syncHwClockFromSnapshot(snap: NativeEngineStatusSnapshot): void {
+    const sr = snap.sampleRate || 48000;
+    const audibleSec = (snap.audibleFrame ?? 0) / sr;
+    this.hwClockAnchor = {
+      audibleSec,
+      capturedPerformanceNow: performance.now(),
+      isPlaying: snap.isPlaying,
+      estimatedLatencyMs: snap.estimatedLatencyMs ?? 0,
+    };
+  }
+
+  public async getPlaybackClock(): Promise<PlaybackClockSnapshot> {
+    if (!this.isNativeRuntime) {
+      const ticksPerSec = (this.fallbackStatus.bpm / 60.0) * this.fallbackStatus.ppq;
+      const elapsed = this.getAudioElapsedSeconds();
+      const audibleTick = Math.floor(Math.max(0, elapsed) * ticksPerSec);
+      return {
+        isPlaying: this.fallbackStatus.isPlaying,
+        sampleRate: 48000,
+        bufferSizeFrames: 1024,
+        currentFrame: Math.floor(elapsed * 48000),
+        audibleFrame: Math.floor(elapsed * 48000),
+        audibleTick,
+        audibleTimeSec: elapsed,
+        estimatedLatencyMs: 20.0,
+        bpm: this.fallbackStatus.bpm,
+        ppq: this.fallbackStatus.ppq,
+      };
+    }
+    const clock = await invoke<PlaybackClockSnapshot>("get_playback_clock");
+    this.hwClockAnchor = {
+      audibleSec: clock.audibleTimeSec,
+      capturedPerformanceNow: performance.now(),
+      isPlaying: clock.isPlaying,
+      estimatedLatencyMs: clock.estimatedLatencyMs,
+    };
+    return clock;
+  }
+
+  public async seekTick(tick: number): Promise<NativeEngineStatusSnapshot> {
+    if (!this.isNativeRuntime) {
+      const ticksPerSec = (this.fallbackStatus.bpm / 60.0) * this.fallbackStatus.ppq;
+      this.fallbackStatus = { ...this.fallbackStatus, nextUnscheduledTick: tick };
+      if (this.webAudioCtx) {
+        this.webAudioPlaybackStartAudioTime = this.webAudioCtx.currentTime - (tick / ticksPerSec);
+      }
+      return this.fallbackStatus;
+    }
+    const snap = await invoke<NativeEngineStatusSnapshot>("seek_tick", { tick });
+    this.syncHwClockFromSnapshot(snap);
+    return snap;
   }
 
   private startWebAudioLoop(): void {
@@ -449,7 +535,9 @@ export class QlNativeEngineClient {
       this.startWebAudioLoop();
       return this.fallbackStatus;
     }
-    return invoke<NativeEngineStatusSnapshot>("play");
+    const snap = await invoke<NativeEngineStatusSnapshot>("play");
+    this.syncHwClockFromSnapshot(snap);
+    return snap;
   }
 
   public async pause(): Promise<NativeEngineStatusSnapshot> {
@@ -458,7 +546,9 @@ export class QlNativeEngineClient {
       this.stopWebAudioLoop();
       return this.fallbackStatus;
     }
-    return invoke<NativeEngineStatusSnapshot>("pause");
+    const snap = await invoke<NativeEngineStatusSnapshot>("pause");
+    this.syncHwClockFromSnapshot(snap);
+    return snap;
   }
 
   public async stop(): Promise<NativeEngineStatusSnapshot> {
@@ -472,7 +562,14 @@ export class QlNativeEngineClient {
       this.stopWebAudioLoop();
       return this.fallbackStatus;
     }
-    return invoke<NativeEngineStatusSnapshot>("stop");
+    const snap = await invoke<NativeEngineStatusSnapshot>("stop");
+    this.hwClockAnchor = {
+      audibleSec: 0,
+      capturedPerformanceNow: performance.now(),
+      isPlaying: false,
+      estimatedLatencyMs: snap.estimatedLatencyMs ?? 0,
+    };
+    return snap;
   }
 
   public async setBpm(bpm: number): Promise<NativeEngineStatusSnapshot> {
