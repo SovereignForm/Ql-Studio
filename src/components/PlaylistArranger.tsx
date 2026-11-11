@@ -57,6 +57,9 @@ export interface PlaylistArrangerProps {
   readonly onUpdatePlaylist: (updater: (prev: QlPlaylistState) => QlPlaylistState) => void;
   readonly onSelectPattern: (patternId: string) => void;
   readonly onSeekTick: (tick: number) => void;
+  readonly isRecording?: boolean;
+  readonly recordingTrackIndex?: number;
+  readonly onArmTrackRecording?: (trackIndex: number) => void;
   readonly onLoadWavSample?: (channelId: string, path: string) => void;
   readonly onTimeStretchClip?: (
     clipId: string,
@@ -826,6 +829,18 @@ export const PlaylistArranger: React.FC<PlaylistArrangerProps> = React.memo((pro
                   </span>
                 </div>
                 <div className="flex items-center gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => props.onArmTrackRecording?.(track.index)}
+                    title={`Arm Track ${track.index + 1} for Vocal/Microphone Recording`}
+                    className={`w-4 h-4 rounded-xs text-[9px] font-bold flex items-center justify-center cursor-pointer transition-all ${
+                      props.isRecording && props.recordingTrackIndex === track.index
+                        ? "bg-red-500 text-white font-extrabold shadow-[0_0_8px_#ff3d3d] animate-pulse"
+                        : "bg-fl-deep text-fl-dim hover:text-red-400 hover:bg-white/5"
+                    }`}
+                  >
+                    R
+                  </button>
                   <button
                     type="button"
                     onClick={() => toggleTrackMute(track.index)}

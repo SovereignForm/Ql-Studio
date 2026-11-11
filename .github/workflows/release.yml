@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   build-tauri:
@@ -30,6 +31,18 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Cancel older zombie queued runs to free macOS runner slots
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          # Query queued runs for this repo and cancel older ones so macOS Apple Silicon runner is unblocked
+          RUNS=$(curl -sSL -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/actions/runs?status=queued")
+          OLD_RUN_IDS=$(echo "$RUNS" | jq -r ".workflow_runs[]? | select(.id != ${{ github.run_id }}) | .id")
+          for rid in $OLD_RUN_IDS; do
+            echo "Cancelling older queued run: $rid"
+            curl -sSL -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/${{ github.repository }}/actions/runs/$rid/cancel" || true
+          done
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

@@ -546,6 +546,7 @@ export const App: React.FC = () => {
   const [mode, setMode] = useState<PlaybackMode>("pattern");
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [recordingTrackIndex, setRecordingTrackIndex] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [songTick, setSongTick] = useState(0);
   const [activeStep, setActiveStep] = useState(0);
@@ -599,7 +600,7 @@ export const App: React.FC = () => {
   const [audioSettingsTab, setAudioSettingsTab] = useState<"output" | "input" | "midi">("output");
   const [audioInputDevices, setAudioInputDevices] = useState<readonly AudioInputDeviceInfo[]>([]);
   const [selectedInputDevice, setSelectedInputDevice] = useState<string>("");
-  const [liveMonitoring, setLiveMonitoring] = useState<boolean>(true);
+  const [liveMonitoring, setLiveMonitoring] = useState<boolean>(false);
   const [midiDevices, setMidiDevices] = useState<readonly MidiDeviceInfo[]>([]);
   const [selectedMidiPortIdx, setSelectedMidiPortIdx] = useState<number>(0);
   const [selectedMidiProfile, setSelectedMidiProfile] = useState<MidiControllerProfile>("generic");
@@ -1303,10 +1304,12 @@ export const App: React.FC = () => {
         playbackStartMsRef.current = 0;
         if (isRecording) {
           const rec = await engineClient.stopRecording().catch(() => null);
+          setIsRecording(false);
           if (rec) {
+            const assignedTrack = rec.trackIndex ?? recordingTrackIndex;
             const newClip: QlPlaylistClip = {
               id: `audio_clip_${Date.now()}`,
-              trackIndex: rec.trackIndex || 0,
+              trackIndex: assignedTrack,
               startTick: rec.startTick,
               lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
               kind: "audio",
@@ -1318,13 +1321,15 @@ export const App: React.FC = () => {
               ...prev,
               clips: [...prev.clips, newClip],
             }));
+            setStatusMessage(`🎙️ Recorded audio saved & placed on Track ${assignedTrack + 1}: ${rec.fileName}`);
           }
         }
         const snap = await engineClient.pause();
         setIsPlaying(snap.isPlaying);
       } else {
         if (isRecording) {
-          await engineClient.startRecording(songTick, 0).catch(() => {});
+          await engineClient.startRecording(songTick, recordingTrackIndex).catch(() => {});
+          setStatusMessage(`🔴 RECORDING LIVE AUDIO to Track ${recordingTrackIndex + 1}…`);
         }
         const ticksPerSec = (bpm / 60.0) * ppq;
         const initialOffsetMs = (songTick / ticksPerSec) * 1000;
@@ -1338,17 +1343,19 @@ export const App: React.FC = () => {
     } catch (err) {
       console.warn("Play/pause notice:", err);
     }
-  }, [engineClient, isPlaying, isRecording, songTick, bpm, ppq]);
+  }, [engineClient, isPlaying, isRecording, recordingTrackIndex, songTick, bpm, ppq]);
 
   const handleStop = useCallback(async () => {
     try {
       playbackStartMsRef.current = 0;
       if (isRecording) {
         const rec = await engineClient.stopRecording().catch(() => null);
+        setIsRecording(false);
         if (rec) {
+          const assignedTrack = rec.trackIndex ?? recordingTrackIndex;
           const newClip: QlPlaylistClip = {
             id: `audio_clip_${Date.now()}`,
-            trackIndex: rec.trackIndex || 0,
+            trackIndex: assignedTrack,
             startTick: rec.startTick,
             lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
             kind: "audio",
@@ -1360,6 +1367,7 @@ export const App: React.FC = () => {
             ...prev,
             clips: [...prev.clips, newClip],
           }));
+          setStatusMessage(`🎙️ Recorded audio saved & placed on Track ${assignedTrack + 1}: ${rec.fileName}`);
         }
       }
       const snap = await engineClient.stop();
@@ -1369,7 +1377,7 @@ export const App: React.FC = () => {
     } catch (err) {
       console.warn("Stop notice:", err);
     }
-  }, [engineClient, isRecording, bpm, ppq]);
+  }, [engineClient, isRecording, recordingTrackIndex, bpm, ppq]);
 
   const handleBpmChange = useCallback(
     async (nextBpm: number) => {
@@ -2226,15 +2234,17 @@ export const App: React.FC = () => {
           try {
             if (isPlaying) {
               if (!isRecording) {
-                await engineClient.startRecording(songTick, 0).catch(() => {});
+                await engineClient.startRecording(songTick, recordingTrackIndex).catch(() => {});
                 setIsRecording(true);
+                setStatusMessage(`🔴 RECORDING LIVE AUDIO to Track ${recordingTrackIndex + 1}…`);
               } else {
                 const rec = await engineClient.stopRecording().catch(() => null);
                 setIsRecording(false);
                 if (rec) {
+                  const assignedTrack = rec.trackIndex ?? recordingTrackIndex;
                   const newClip: QlPlaylistClip = {
                     id: `audio_clip_${Date.now()}`,
-                    trackIndex: rec.trackIndex || 0,
+                    trackIndex: assignedTrack,
                     startTick: rec.startTick,
                     lengthTicks: Math.max(96, Math.round((rec.durationSeconds * (bpm / 60)) * ppq)),
                     kind: "audio",
@@ -2246,10 +2256,19 @@ export const App: React.FC = () => {
                     ...prev,
                     clips: [...prev.clips, newClip],
                   }));
+                  setStatusMessage(`🎙️ Recorded audio saved & placed on Track ${assignedTrack + 1}: ${rec.fileName}`);
                 }
               }
             } else {
-              setIsRecording((r) => !r);
+              setIsRecording((r) => {
+                const next = !r;
+                setStatusMessage(
+                  next
+                    ? `🎙️ Recording Armed on Track ${recordingTrackIndex + 1}. Press Play (Space) to record.`
+                    : "Recording Disarmed."
+                );
+                return next;
+              });
             }
           } catch (err) {
             console.warn("Record toggle notice:", err);
@@ -2384,6 +2403,19 @@ export const App: React.FC = () => {
               ppq={ppq}
               songTick={songTick}
               isPlaying={isPlaying}
+              isRecording={isRecording}
+              recordingTrackIndex={recordingTrackIndex}
+              onArmTrackRecording={(trackIdx) => {
+                setRecordingTrackIndex(trackIdx);
+                setIsRecording((curr) => {
+                  if (curr && recordingTrackIndex === trackIdx) {
+                    setStatusMessage(`Recording Disarmed for Track ${trackIdx + 1}.`);
+                    return false;
+                  }
+                  setStatusMessage(`🎙️ Track ${trackIdx + 1} ARMED for recording. Press Play (Space) to record.`);
+                  return true;
+                });
+              }}
               onUpdatePlaylist={setPlaylist}
               onSelectPattern={setActivePatternId}
               onSeekTick={(tick) => {

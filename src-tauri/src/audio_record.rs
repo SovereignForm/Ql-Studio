@@ -53,7 +53,8 @@ pub struct AudioRecorderManager {
 impl AudioRecorderManager {
     pub fn new(monitor_producer: Option<Producer<f32>>) -> Self {
         let is_recording = Arc::new(AtomicBool::new(false));
-        let live_monitoring_enabled = Arc::new(AtomicBool::new(true));
+        // Default live monitoring to FALSE to prevent acoustic feedback Larsen effect ("beeep" squeal) through speakers
+        let live_monitoring_enabled = Arc::new(AtomicBool::new(false));
         let target_insert = Arc::new(Mutex::new(1));
         let recorded_frames = Arc::new(Mutex::new(Vec::with_capacity(48000 * 60))); // Preallocate 1 min
         let recording_start_tick = Arc::new(AtomicU64::new(0));

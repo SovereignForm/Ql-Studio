@@ -472,13 +472,13 @@ export const Toolbar: React.FC<ToolbarProps> = React.memo((p) => {
             <Square size={14} fill="currentColor" />
           </ToolButton>
           <ToolButton
-            title="Record Armed Toggle"
+            title={p.isRecording ? "🔴 RECORDING ARMED / ACTIVE (Click to Disarm / Stop)" : "Record Audio / Vocal (Arm Recording)"}
             active={p.isRecording}
             glow="#ff3d3d"
             onClick={p.onRecord}
-            className="h-9 w-10"
+            className={`h-9 w-10 ${p.isRecording ? "animate-pulse" : ""}`}
           >
-            <Circle size={14} fill="currentColor" className={p.isRecording ? "" : "text-red-400"} />
+            <Circle size={14} fill="currentColor" className={p.isRecording ? "text-white" : "text-red-400"} />
           </ToolButton>
         </div>
 
