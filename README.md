@@ -27,19 +27,22 @@
 
 ---
 
-## 🎬 Video & Visual Walkthrough
+## 🎬 Live In-App Video & Interactive Walkthrough
 
 <p align="center">
-  <a href="https://github.com/SovereignForm/Ql-Studio/releases">
-    <img src="https://raw.githubusercontent.com/SovereignForm/Ql-Studio/main/docs/assets/studio_overview_banner.png" alt="QL Studio Workstation Showcase" width="100%" style="border-radius: 8px; border: 1px solid #333;" onerror="this.src='public/logo.svg'; this.width=240;" />
-  </a>
+  <img src="docs/assets/ql_studio_demo.gif" alt="QL Studio Live DAW In-App Walkthrough" width="100%" style="border-radius: 8px; border: 1px solid rgba(255,133,0,0.3); box-shadow: 0 0 20px rgba(0,0,0,0.8);" />
 </p>
 
-> 🎥 **Interactive DAW Feature Showcase**:
-> * **[Watch Quickstart Demo Video & Workflow Tutorial (YouTube / Video Hub)](https://github.com/SovereignForm/Ql-Studio/releases)**
-> * Live Multi-Track Arranging with Interactive Bezier Automation Curves
-> * Channel Rack Step Sequencer & PolyBLEP Synthesizer with Moog-Style Resonant Filter
-> * 64-Insert Real-Time Acyclic Routing Mixer with Zero-Latency DSP Plugins
+<p align="center">
+  <a href="docs/assets/ql_studio_demo.mp4">▶️ <b>Download & Watch High-Quality 60FPS In-App MP4 Video</b></a> &bull;
+  <a href="https://github.com/SovereignForm/Ql-Studio/releases">📦 <b>Download Desktop Builds</b></a>
+</p>
+
+> 🎥 **Live Workstation Demonstration Highlights:**
+> * **Channel Rack & Step Sequencer:** Dynamic 16-step beat sequencing with velocity shading and PolyBLEP synth auditioning.
+> * **Playlist Arranger (F5):** Smooth 60 FPS playhead movement, multi-track audio waveform timeline, and interactive Bezier tension automation curves.
+> * **Piano Roll Editor (F7):** Interactive note placing, slide notes with logarithmic pitch bends, and MIDI note auditioning.
+> * **64-Insert Mixer (F9):** Real-time peak meters with logarithmic decay, insert effects routing, and master bus limiter.
 
 ---
 
