@@ -824,7 +824,25 @@ pub fn set_play_mode(
     state: State<'_, QlEngineController>,
 ) -> Result<EngineStatusSnapshot, String> {
     let mut guard = state.shared.lock().map_err(|e| e.to_string())?;
-    guard.scheduler.set_play_mode(mode);
+    guard.scheduler.play_mode = mode;
+    guard.scheduler.next_unscheduled_tick = 0;
+
+    // Purge obsolete audio queue and reset hardware frame counter to 0
+    // Prevents burst-scheduling thousands of expired events on mode switch
+    let _ = guard.command_producer.push(RealTimeCommand::Seek { target_frame: 0 });
+    state.current_frame_estimate.store(0, Ordering::Release);
+
+    if guard.scheduler.is_playing {
+        let SharedLookaheadState {
+            scheduler,
+            pattern,
+            channels,
+            event_producer,
+            ..
+        } = &mut *guard;
+        scheduler.advance_lookahead(0, pattern, channels, event_producer);
+    }
+
     Ok(snapshot_from_guard(&guard, &state))
 }
 

@@ -629,10 +629,15 @@ export class QlNativeEngineClient {
 
   public async setPlayMode(mode: PlayMode): Promise<NativeEngineStatusSnapshot> {
     if (!this.isNativeRuntime) {
-      this.fallbackStatus = { ...this.fallbackStatus, playMode: mode };
+      this.fallbackStatus = { ...this.fallbackStatus, playMode: mode, nextUnscheduledTick: 0 };
+      if (this.webAudioCtx) {
+        this.webAudioPlaybackStartAudioTime = this.webAudioCtx.currentTime;
+      }
       return this.fallbackStatus;
     }
-    return invoke<NativeEngineStatusSnapshot>("set_play_mode", { mode });
+    const snap = await invoke<NativeEngineStatusSnapshot>("set_play_mode", { mode });
+    this.syncHwClockFromSnapshot(snap);
+    return snap;
   }
 
   public async updateArrangement(

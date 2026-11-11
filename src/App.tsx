@@ -998,7 +998,11 @@ export const App: React.FC = () => {
 
   const handleModeChange = useCallback(async (nextMode: PlaybackMode) => {
     setMode(nextMode);
+    playbackStartMsRef.current = performance.now();
+    setSongTick(0);
+    setActiveStep(0);
     await engineClient.setPlayMode(nextMode).catch(() => {});
+    setStatusMessage(`Switched playback to ${nextMode.toUpperCase()} mode.`);
   }, [engineClient]);
 
   const focusWindow = useCallback((id: string) => {
@@ -1169,11 +1173,31 @@ export const App: React.FC = () => {
               currentTick < c.startTick + c.lengthTicks,
           );
 
+          // In Song mode, evaluate clips active at currentTick; in Pattern mode, evaluate curPat
+          const isSongMode = mode === "song";
+          const activePat = isSongMode
+            ? curPlay.clips.find(
+                (c) =>
+                  c.kind === "pattern" &&
+                  !c.muted &&
+                  currentTick >= c.startTick &&
+                  currentTick < c.startTick + c.lengthTicks,
+              )
+              ? (patterns.find((p) => p.id === curPlay.clips.find(
+                  (c) =>
+                    c.kind === "pattern" &&
+                    !c.muted &&
+                    currentTick >= c.startTick &&
+                    currentTick < c.startTick + c.lengthTicks,
+                )?.referenceId) ?? curPat)
+              : null
+            : curPat;
+
           for (const ch of curChans) {
             const anySolo = curChans.some((c) => c.solo);
             const audible = anySolo ? ch.solo : !ch.muted;
-            if (!audible) continue;
-            const st = curPat.channelData[ch.id]?.steps[stepIdx];
+            if (!audible || !activePat) continue;
+            const st = activePat.channelData[ch.id]?.steps[stepIdx];
             if (st?.active) {
               activeVoices += 1;
               const vel = st.velocity / 127;
